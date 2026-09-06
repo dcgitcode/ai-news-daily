@@ -1,0 +1,90 @@
+name: AI news daily
+on:
+  schedule:
+    - cron: '17 0 * * *' # UTC; 北京时间 08:17
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Only collect and render; do not send'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ai-news-daily
+  cancel-in-progress: false
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -v
+      - name: Restore persistent delivery state
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p state
+          remote_state=$(git ls-remote --heads origin refs/heads/digest-state)
+          if [ -n "$remote_state" ]; then
+            git fetch origin digest-state
+            git show FETCH_HEAD:delivery.json > state/delivery.json
+          fi
+      - name: Collect and deliver
+        env:
+          CHANNELS: email
+          SMTP_HOST: ${{ secrets.SMTP_HOST || 'smtp.163.com' }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT || '465' }}
+          SMTP_SECURITY: ${{ secrets.SMTP_SECURITY || 'ssl' }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || 'false' }}
+        shell: bash
+        run: |
+          if [ "$DRY_RUN" = true ]; then
+            python -m news_digest --dry-run
+          else
+            python -m news_digest
+          fi
+      - name: Persist state even after partial delivery failure
+        if: ${{ always() && hashFiles('state/delivery.json') != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          remote_state=$(git ls-remote --heads origin refs/heads/digest-state)
+          if [ -n "$remote_state" ]; then
+            git fetch origin digest-state
+            git worktree add /tmp/digest-state FETCH_HEAD
+          else
+            git worktree add --detach /tmp/digest-state HEAD
+            git -C /tmp/digest-state checkout --orphan digest-state
+            git -C /tmp/digest-state rm -rf .
+          fi
+          cp state/delivery.json /tmp/digest-state/delivery.json
+          git -C /tmp/digest-state add delivery.json
+          if ! git -C /tmp/digest-state diff --cached --quiet; then
+            git -C /tmp/digest-state commit -m 'Update delivery deduplication state'
+            git -C /tmp/digest-state push origin HEAD:refs/heads/digest-state
+          fi
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-news-report-${{ github.run_number }}
+          path: reports/
+          retention-days: 7
+          if-no-files-found: ignore
