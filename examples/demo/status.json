@@ -1,0 +1,13 @@
+{
+  "generated_at": "2026-09-06T06:08:35.107043+00:00",
+  "sources": [
+    {
+      "source": "offline-demo",
+      "ok": true,
+      "count": 2
+    }
+  ],
+  "candidates": 2,
+  "dry_run": true,
+  "deliveries": {}
+}
