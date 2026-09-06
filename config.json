@@ -1,0 +1,77 @@
+{
+  "lookback_hours": 48,
+  "max_items": 12,
+  "min_score": 4,
+  "title_similarity": 0.92,
+  "summary_chars": 280,
+  "keywords": {
+    "artificial intelligence": 3,
+    "AI": 2,
+    "LLM": 3,
+    "agent": 3,
+    "GPT": 3,
+    "Gemini": 3,
+    "Claude": 3,
+    "具身智能": 5,
+    "embodied": 5,
+    "robotics": 4,
+    "robot": 4,
+    "humanoid": 4,
+    "VLA": 5,
+    "LeRobot": 5,
+    "MuJoCo": 4,
+    "Isaac Lab": 4,
+    "ROS 2": 4,
+    "world model": 4,
+    "diffusion": 3,
+    "transformer": 3,
+    "machine learning": 3,
+    "人工智能": 4,
+    "大模型": 4,
+    "机器人": 4,
+    "智能体": 4,
+    "深度学习": 3,
+    "机器学习": 3,
+    "生成式": 3,
+    "多模态": 4,
+    "世界模型": 4,
+    "强化学习": 3,
+    "自动驾驶": 3,
+    "算力": 2,
+    "通义": 3,
+    "智谱": 3,
+    "豆包": 3,
+    "DeepSeek": 3,
+    "Kimi": 3,
+    "OpenAI": 3
+  },
+  "exclude_keywords": [
+    "casino",
+    "airdrop"
+  ],
+  "rss": [
+    {
+      "name": "IT之家",
+      "url": "https://www.ithome.com/rss/",
+      "weight": 3
+    },
+    {
+      "name": "极客公园",
+      "url": "https://www.geekpark.net/rss",
+      "weight": 4
+    }
+  ],
+  "arxiv": {
+    "enabled": false,
+    "query": "cat:cs.AI OR cat:cs.RO OR cat:cs.LG",
+    "max_results": 40,
+    "weight": 2
+  },
+  "github": {
+    "enabled": false,
+    "query": "topic:artificial-intelligence stars:>=50 archived:false",
+    "max_results": 30,
+    "weight": 2
+  },
+  "chinese_only": true
+}
