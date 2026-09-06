@@ -1,0 +1,18 @@
+{
+  "generated_at": "2026-09-06T06:08:12.436721+00:00",
+  "sources": [
+    {
+      "source": "IT之家",
+      "ok": true,
+      "count": 60
+    },
+    {
+      "source": "极客公园",
+      "ok": true,
+      "count": 30
+    }
+  ],
+  "candidates": 21,
+  "dry_run": true,
+  "deliveries": {}
+}
