@@ -170,7 +170,9 @@ cron 时间写在 `wrangler.jsonc` 的 `triggers.crons`，**UTC 时间**，当�
 
 **方式二：外部调度器触发**（验证真正的自动执行）
 
-最快是 cron-job.org，不用装任何东西：
+这条链路不经过 GitHub 自带的 `schedule`，所以不会被 60 天无活动停用，也不会在负载高峰被丢弃。实测从发出请求到开始执行约 1 秒。
+
+想长期无人值守地自动触发，最快是 cron-job.org，不用装任何东西：
 
 | 字段 | 值 |
 | --- | --- |
@@ -178,11 +180,11 @@ cron 时间写在 `wrangler.jsonc` 的 `triggers.crons`，**UTC 时间**，当�
 | Method | POST |
 | Header | `Authorization: Bearer <PAT>`、`Accept: application/vnd.github+json`、`Content-Type: application/json` |
 | Body | `{"event_type": "selftest"}` |
-| 周期 | 每 30 分钟 |
+| 周期 | 自选，`*/30 * * * *` 为每 30 分钟 |
 
-已部署 Cloudflare 时，`*/30 * * * *` 这条 cron 会自动做同样的事。
+建三条 job，body 的 `event_type` 依次为 `selftest`、`daily-digest`、`cloudstudio-checkin`，时间建议错开整点。
 
-**验证通过后务必清理**：删除 `.github/workflows/selftest.yml`，并从 `wrangler.jsonc` 的 crons 与 `src/index.js` 的 `CRON_TARGETS` 中移除 `*/30 * * * *`。否则它会每半小时发一封邮件给你。
+**验证通过后务必清理**：删除 `.github/workflows/selftest.yml`。保留它不会自动触发（没有绑定 cron），但若配了外部定时任务忘了删，它会按周期持续给你发邮件。
 
 ### 跨天去重如何保存
 

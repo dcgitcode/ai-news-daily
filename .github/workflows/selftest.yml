@@ -1,7 +1,7 @@
 name: Scheduler self test
 
 # 验证「外部调度器 → repository_dispatch → Actions」整条链路是否打通。
-# 验证通过后请删除本文件，并移除 wrangler.jsonc 中 "*/30 * * * *" 这条 cron。
+# 单独触发一次即可，没有绑定任何定时 cron。验证通过后删除本文件。
 
 on:
   repository_dispatch:
