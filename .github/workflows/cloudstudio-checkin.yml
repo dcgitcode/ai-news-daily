@@ -2,7 +2,7 @@ name: Cloud Studio daily check-in
 
 on:
   schedule:
-    - cron: '0 0 * * *' # UTC; 每天北京时间 08:00 启动
+    - cron: '17 23 * * *' # UTC; 每天北京时间 07:17 启动
   workflow_dispatch:
 
 permissions:
@@ -27,7 +27,7 @@ jobs:
         if: github.event_name == 'schedule'
         shell: bash
         run: |
-          wait_minutes=$(shuf -i 0-239 -n 1)
+          wait_minutes=$(shuf -i 43-282 -n 1)
           echo "Waiting ${wait_minutes} minutes before check-in."
           sleep "$((wait_minutes * 60))"
       - name: Claim daily reward
