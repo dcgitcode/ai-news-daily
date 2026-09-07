@@ -1,7 +1,12 @@
 name: AI news daily
+
+# 不再使用 GitHub 自带的 schedule：公共仓库连续 60 天无活动会被自动停用，
+# 且整点/半点负载高峰时 schedule 会延迟甚至被丢弃。
+# 改由外部调度器（Cloudflare Workers Cron / cron-job.org / 腾讯云函数）
+# 调用 repository_dispatch 触发，时间可控、不会被停用。
 on:
-  schedule:
-    - cron: '17 0 * * *' # UTC; 北京时间 08:17
+  repository_dispatch:
+    types: [daily-digest]
   workflow_dispatch:
     inputs:
       dry_run:
@@ -28,6 +33,17 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - run: python -m unittest discover -s tests -v
+      - name: Resolve dry-run flag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "DRY_RUN=true" >> "$GITHUB_ENV"
+          elif [ "${{ github.event_name }}" = "repository_dispatch" ] && [ "${{ github.event.client_payload.dry_run }}" = "true" ]; then
+            echo "DRY_RUN=true" >> "$GITHUB_ENV"
+          else
+            echo "DRY_RUN=false" >> "$GITHUB_ENV"
+          fi
       - name: Restore persistent delivery state
         shell: bash
         run: |
@@ -50,10 +66,10 @@ jobs:
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || 'false' }}
         shell: bash
         run: |
-          if [ "$DRY_RUN" = true ]; then
+          set -euo pipefail
+          if [ "$DRY_RUN" = "true" ]; then
             python -m news_digest --dry-run
           else
             python -m news_digest
@@ -80,6 +96,25 @@ jobs:
             git -C /tmp/digest-state commit -m 'Update delivery deduplication state'
             git -C /tmp/digest-state push origin HEAD:refs/heads/digest-state
           fi
+      - name: Alert on failure
+        if: failure()
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST || 'smtp.163.com' }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT || '465' }}
+          SMTP_SECURITY: ${{ secrets.SMTP_SECURITY || 'ssl' }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          ALERT_SUBJECT: '[ai-news-daily] 日报任务失败'
+          ALERT_BODY: |
+            工作流：${{ github.workflow }}
+            触发方式：${{ github.event_name }}
+            运行编号：${{ github.run_number }}
+            日志：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            常见原因：SMTP 授权码失效、Secrets 缺失、所有新闻源抓取失败。
+        run: python notify_failure.py
       - name: Upload report
         if: always()
         uses: actions/upload-artifact@v4

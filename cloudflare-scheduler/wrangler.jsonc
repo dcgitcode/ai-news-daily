@@ -2,7 +2,12 @@
   "name": "ai-news-scheduler",
   "main": "src/index.js",
   "compatibility_date": "2026-09-07",
+  // Cron Triggers 使用 UTC。北京时间 = UTC + 8。
+  // 17 分触发是刻意的：避开整点/半点的调度高峰。
   "triggers": {
-    "crons": ["17 0 * * *"]
+    "crons": ["17 0 * * *", "17 23 * * *"]
+  },
+  "vars": {
+    "GITHUB_REPO": "dcgitcode/ai-news-daily"
   }
 }

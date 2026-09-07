@@ -1,0 +1,10 @@
+{
+  "name": "ai-news-scheduler",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cloudflare Workers cron that dispatches GitHub repository_dispatch events",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev"
+  }
+}

@@ -1,5 +1,14 @@
 # 验证记录
 
+## 云端定时改造（2026-09-07）
+
+- 两个 workflow 去掉 `schedule`，改为 `repository_dispatch` + `workflow_dispatch`，规避公共仓库 60 天无活动停用与负载高峰延迟。
+- Cloud Studio 任务删除 `sleep 43–282` 的随机空转，`timeout-minutes` 由 300 降到 10。
+- 新增 `notify_failure.py`，失败时用同一套 SMTP 发告警；凭据缺失或发送异常不覆盖原始失败。
+- `cloudflare-scheduler` 改为双 cron（日报、签到），打 `repository_dispatch` 接口，附健康检查与带鉴权的手动触发端点。
+- 本地校验：`node --check` 通过；`notify_failure.py` 语法检查通过；两个 workflow YAML 解析通过。
+- 未验证：Cloudflare 部署、真实 PAT 调用、runner 上真实执行——均需用户配置凭据后验证。
+
 ## 中文默认版更新（2026-09-06）
 
 默认来源已切换 IT之家和极客公园，arXiv/GitHub 默认关闭；增加标题与可见摘要中文过滤。12 项测试通过，包括拒绝英文标题/英文摘要。真实抓取分别返回 60、30 条，筛选去重后 21 个候选，展示前 12 条。examples/live 与 examples/demo 均已更新为中文版。邮件/微信与云端部署的未验证范围不变。

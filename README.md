@@ -24,8 +24,12 @@ ai-news-daily/
 │   ├── core.py           # 清洗、过滤、评分、去重、HTML 与状态
 │   ├── sources.py        # RSS / arXiv / GitHub
 │   └── delivery.py       # SMTP / pushplus
+├── cloudstudio_checkin.py # Cloud Studio 每日签到
+├── notify_failure.py      # Actions 失败时的 SMTP 告警
+├── cloudflare-scheduler/  # 外部定时调度器（Workers Cron → repository_dispatch）
 ├── tests/test_digest.py
 ├── .github/workflows/daily.yml
+├── .github/workflows/cloudstudio-checkin.yml
 ├── .env.example
 ├── .gitignore
 ├── config.json
@@ -89,16 +93,72 @@ python -m unittest discover -s tests -v
 
 pushplus 的 HTTP 200 与业务 `code=200` 只代表**平台已接收并排队**，不代表微信实际送达；请结合平台记录与 `reports/status.json` 的流水号排查。SMTP 接收也不代表一定进入收件箱。首次启用建议先只填自己的一个收件地址，检查垃圾邮件箱。
 
-## 3. 部署 GitHub Actions
+## 3. 部署与云端定时
+
+### 3.1 为什么不用 GitHub 自带的 schedule
+
+初版用 workflow 里的 `schedule` 定时，实际不可靠：
+
+| 问题 | 后果 |
+| --- | --- |
+| 公共仓库连续 60 天无活动，`schedule` 被自动停用 | 跑着跑着就停了，且不报错 |
+| 高负载时延迟，整点/半点最严重，队列任务可能被丢弃 | 时间飘、甚至当天不跑 |
+| 原 Cloud Studio 任务在 runner 上 `sleep` 43–282 分钟做随机延迟 | 长时间空转占用，违反使用限制，易中途被回收 |
+
+现在两个 workflow **只保留 `repository_dispatch` 和 `workflow_dispatch`**，定时交给外部调度器。没有 `schedule`，就不会被 60 天规则停用。
+
+### 3.2 部署步骤
 
 1. 新建 GitHub 仓库，将本目录的内容放在仓库根目录，**包括隐藏的 `.github` 目录**。不要上传 `.env`、`.venv`、`reports`、`state`。
-2. 在 `Settings → Secrets and variables → Actions → Secrets` 中添加上述所需 Secrets。仅配置启用渠道需要的项；无需自己创建 `GITHUB_TOKEN`。
+2. 在 `Settings → Secrets and variables → Actions → Secrets` 中添加所需 Secrets。仅配置启用渠道需要的项；无需自己创建 `GITHUB_TOKEN`。
 3. 当前 workflow 固定 `CHANNELS: email`，无需新增渠道变量，也无需 PUSHPLUS_TOKEN。
 4. 确保仓库允许 Actions 写入内容。workflow 声明了 `contents: write`，用于保存去重记录；组织政策或分支规则若禁止创建/更新 `digest-state`，需要调整规则。
 5. 在默认分支的 `Actions → AI news daily → Run workflow` 保持 `dry_run=true`，运行真实抓取预览，下载 `ai-news-report-...` artifact 查看 HTML 与来源状态。
-6. 填好凭据后再次手动运行，关闭 `dry_run` 才会真实推送。日常定时执行会直接推送。
+6. 填好凭据后再次手动运行，关闭 `dry_run` 才会真实推送。外部调度器触发时固定 `dry_run=false`。
+7. 在 GitHub `Settings → Notifications` 中确认开启 Actions 失败邮件。workflow 内含 `Alert on failure` 步骤，会用同一套 SMTP 再发一封告警。**Cloud Studio 签到失败最常见的原因是 Cookie 过期**，告警邮件会直接提示你更新 `CLOUDSTUDIO_COOKIE`。
 
-默认 `17 0 * * *` 为 UTC 00:17，即北京时间 **08:17**。例如北京时间 09:30 改为 `30 1 * * *`。定时工作流必须存在于默认分支；GitHub 调度可能延迟，公共仓库连续 60 天没有活动可能被停用，需要检查 Actions 页面。它不是严格准点的通知服务。
+### 3.3 选择外部调度器
+
+三者打的是同一个接口，可随时替换：
+
+```http
+POST https://api.github.com/repos/dcgitcode/ai-news-daily/dispatches
+Authorization: Bearer <你的 PAT>
+Content-Type: application/json
+
+{"event_type": "daily-digest", "client_payload": {"dry_run": false}}
+```
+
+Cloud Studio 签到把 `event_type` 换成 `cloudstudio-checkin`，不带 `client_payload`。
+
+| 方案 | 费用 | 精度 | 适合场景 |
+| --- | --- | --- | --- |
+| Cloudflare Workers Cron | 免费额度足够 | 分钟级，最准 | 推荐。仓库已带 `cloudflare-scheduler/`，部署一次即可 |
+| cron-job.org | 免费 | 分钟级 | 不想碰命令行。网页填 URL + Header + Body |
+| 腾讯云函数 SCF 定时触发器 | 免费额度足够 | 分钟级 | 国内网络，还能直接跑签到脚本，不经过 GitHub |
+| 本机 Windows 计划任务 | 0 | 依赖机器开机 | 兜底。一条 `curl` 即可 |
+
+PAT 需要 `repo` 权限（经典 PAT）或 `Contents`/`Actions` 写权限（细粒度 PAT）；公共仓库用 `public_repo` 也够。
+
+### 3.4 部署 Cloudflare 调度器
+
+```bash
+cd cloudflare-scheduler
+npm install -g wrangler
+wrangler login
+wrangler secret put GITHUB_DISPATCH_TOKEN   # 粘贴上面的 PAT
+wrangler secret put TRIGGER_TOKEN           # 自定义一串随机字符串，用于手动触发鉴权
+wrangler deploy
+```
+
+部署后访问 `https://ai-news-scheduler.<你的子域>.workers.dev/health` 应返回 JSON。手动补跑：
+
+```bash
+curl -X POST -H "X-Trigger-Token: <TRIGGER_TOKEN>" \
+  https://ai-news-scheduler.<你的子域>.workers.dev/run/daily-digest
+```
+
+cron 时间写在 `wrangler.jsonc` 的 `triggers.crons`，**UTC 时间**，当前为 UTC 00:17（北京 08:17 日报）和 UTC 23:17（北京 07:17 签到）。改时间只需改这两行和 `src/index.js` 里的 `CRON_TARGETS` 映射。
 
 ### 跨天去重如何保存
 
