@@ -42,15 +42,19 @@ def main() -> int:
         if address.strip()
     ]
 
+    # STRICT=1 时把发送失败当作任务失败，供自检任务验证链路使用。
+    strict = os.getenv("ALERT_STRICT", "").strip() in {"1", "true", "yes"}
+
     if not host or not user or not password or not recipients:
-        print("告警未发送：SMTP 或收件人配置缺失，请检查仓库 Secrets。")
-        return 0
+        message = "告警未发送：SMTP 或收件人配置缺失，请检查仓库 Secrets。"
+        print(message)
+        return 1 if strict else 0
 
     try:
         port = int(os.getenv("SMTP_PORT", "465"))
     except ValueError:
         print("告警未发送：SMTP_PORT 不是数字。")
-        return 0
+        return 1 if strict else 0
 
     security = os.getenv("SMTP_SECURITY", "ssl").strip().lower()
     message = build_message()
@@ -69,7 +73,7 @@ def main() -> int:
                 client.send_message(message)
     except (smtplib.SMTPException, OSError) as error:
         print(f"告警发送失败：{error}")
-        return 0
+        return 1 if strict else 0
 
     print("告警邮件已发送。")
     return 0

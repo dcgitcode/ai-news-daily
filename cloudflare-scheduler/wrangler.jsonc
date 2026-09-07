@@ -5,7 +5,8 @@
   // Cron Triggers 使用 UTC。北京时间 = UTC + 8。
   // 17 分触发是刻意的：避开整点/半点的调度高峰。
   "triggers": {
-    "crons": ["17 0 * * *", "17 23 * * *"]
+    // 第三条为临时自检，验证通过后删除。
+    "crons": ["17 0 * * *", "17 23 * * *", "*/30 * * * *"]
   },
   "vars": {
     "GITHUB_REPO": "dcgitcode/ai-news-daily"

@@ -6,6 +6,8 @@
 const CRON_TARGETS = {
   "17 0 * * *": { event: "daily-digest", label: "AI news daily" }, // 北京 08:17
   "17 23 * * *": { event: "cloudstudio-checkin", label: "Cloud Studio check-in" }, // 北京 07:17
+  // 临时自检：链路验证通过后删除本行，并移除 wrangler.jsonc 里的对应 cron。
+  "*/30 * * * *": { event: "selftest", label: "Scheduler self test" },
 };
 
 function dispatchUrl(env, endpoint) {

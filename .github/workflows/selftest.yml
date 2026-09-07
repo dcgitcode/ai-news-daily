@@ -1,0 +1,108 @@
+name: Scheduler self test
+
+# 验证「外部调度器 → repository_dispatch → Actions」整条链路是否打通。
+# 验证通过后请删除本文件，并移除 wrangler.jsonc 中 "*/30 * * * *" 这条 cron。
+
+on:
+  repository_dispatch:
+    types: [selftest]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scheduler-selftest
+  cancel-in-progress: false
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger and clock
+        shell: bash
+        run: |
+          echo "event_name : ${{ github.event_name }}"
+          echo "event_type : ${{ github.event.action }}"
+          echo "ref        : ${{ github.ref }}"
+          echo "run_id     : ${{ github.run_id }}"
+          echo "utc_now    : $(date -u '+%Y-%m-%d %H:%M:%S')"
+          echo "beijing_now: $(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')"
+
+      - name: Check configured secrets
+        shell: bash
+        env:
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          CLOUDSTUDIO_COOKIE: ${{ secrets.CLOUDSTUDIO_COOKIE }}
+        run: |
+          set -u
+          missing=0
+          check() {
+            if [ -z "${2:-}" ]; then
+              echo "MISSING : $1"
+              missing=1
+            else
+              echo "OK      : $1 (length=${#2})"
+            fi
+          }
+          check SMTP_USER "$SMTP_USER"
+          check SMTP_PASSWORD "$SMTP_PASSWORD"
+          check EMAIL_TO "$EMAIL_TO"
+          check CLOUDSTUDIO_COOKIE "$CLOUDSTUDIO_COOKIE"
+          if [ "$missing" -ne 0 ]; then
+            echo "::warning::以上 Secrets 未配置，对应功能不会工作。"
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Verify cookie carries a session
+        shell: bash
+        env:
+          CLOUDSTUDIO_COOKIE: ${{ secrets.CLOUDSTUDIO_COOKIE }}
+        run: |
+          python - <<'PY'
+          import os
+          from cloudstudio_checkin import cookie_value
+
+          cookie = os.environ.get("CLOUDSTUDIO_COOKIE", "")
+          if not cookie:
+              print("SKIP: 未配置 CLOUDSTUDIO_COOKIE，跳过 Cookie 结构检查。")
+              raise SystemExit(0)
+          source = cookie_value(cookie, "skey") or cookie_value(cookie, "cloudstudio-session")
+          if not source:
+              raise SystemExit("Cookie 中缺少 skey / cloudstudio-session，签到会失败。")
+          print(f"Cookie 结构正常，session 长度 {len(source)}。")
+          PY
+
+      - name: Send test email
+        shell: bash
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST || 'smtp.163.com' }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT || '465' }}
+          SMTP_SECURITY: ${{ secrets.SMTP_SECURITY || 'ssl' }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          ALERT_STRICT: '1'
+          ALERT_SUBJECT: '[ai-news-daily] 调度自检通过'
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          WORKFLOW_NAME: ${{ github.workflow }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          export ALERT_BODY="调度链路正常：外部调度器已成功触发 GitHub Actions。
+          工作流：${WORKFLOW_NAME}
+          运行编号：${RUN_NUMBER}
+          北京时间：$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')
+          日志：${RUN_URL}"
+          python notify_failure.py

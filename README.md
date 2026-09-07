@@ -160,6 +160,30 @@ curl -X POST -H "X-Trigger-Token: <TRIGGER_TOKEN>" \
 
 cron 时间写在 `wrangler.jsonc` 的 `triggers.crons`，**UTC 时间**，当前为 UTC 00:17（北京 08:17 日报）和 UTC 23:17（北京 07:17 签到）。改时间只需改这两行和 `src/index.js` 里的 `CRON_TARGETS` 映射。
 
+### 3.5 验证链路是否打通
+
+仓库内置 `selftest` 工作流，被触发后会打印触发来源与北京时间（用于核对 cron 换算）、检查 Secrets 是否配置、校验 Cloud Studio Cookie 结构，并发一封主题为「[ai-news-daily] 调度自检通过」的邮件。任一步失败即标红。
+
+**方式一：先用网页手动触发**（验证工作流本身）
+
+`Actions → Scheduler self test → Run workflow`。收到邮件说明 Secrets 与 SMTP 正常。这一步不通，先别配调度器。
+
+**方式二：外部调度器触发**（验证真正的自动执行）
+
+最快是 cron-job.org，不用装任何东西：
+
+| 字段 | 值 |
+| --- | --- |
+| URL | `https://api.github.com/repos/dcgitcode/ai-news-daily/dispatches` |
+| Method | POST |
+| Header | `Authorization: Bearer <PAT>`、`Accept: application/vnd.github+json`、`Content-Type: application/json` |
+| Body | `{"event_type": "selftest"}` |
+| 周期 | 每 30 分钟 |
+
+已部署 Cloudflare 时，`*/30 * * * *` 这条 cron 会自动做同样的事。
+
+**验证通过后务必清理**：删除 `.github/workflows/selftest.yml`，并从 `wrangler.jsonc` 的 crons 与 `src/index.js` 的 `CRON_TARGETS` 中移除 `*/30 * * * *`。否则它会每半小时发一封邮件给你。
+
 ### 跨天去重如何保存
 
 不依赖可能被清理的 Actions cache。workflow 在单独的 `digest-state` 分支保存 URL/规范化标题的 SHA-256 摘要和受理时间，两个渠道独立记录；推送失败不标记该渠道。某渠道成功后另一渠道失败，仍执行状态提交，任务最终标红提示失败。下一次运行会重试仍在抓取窗口内且尚未成功的条目。
