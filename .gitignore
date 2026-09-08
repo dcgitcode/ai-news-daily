@@ -4,3 +4,5 @@ __pycache__/
 *.pyc
 reports/
 state/
+.wrangler/
+node_modules/

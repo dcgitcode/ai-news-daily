@@ -160,31 +160,38 @@ curl -X POST -H "X-Trigger-Token: <TRIGGER_TOKEN>" \
 
 cron 时间写在 `wrangler.jsonc` 的 `triggers.crons`，**UTC 时间**，当前为 UTC 00:17（北京 08:17 日报）和 UTC 23:17（北京 07:17 签到）。改时间只需改这两行和 `src/index.js` 里的 `CRON_TARGETS` 映射。
 
-### 3.5 验证链路是否打通
+### 3.5 触发一次任务
 
-仓库内置 `selftest` 工作流，被触发后会打印触发来源与北京时间（用于核对 cron 换算）、检查 Secrets 是否配置、校验 Cloud Studio Cookie 结构，并发一封主题为「[ai-news-daily] 调度自检通过」的邮件。任一步失败即标红。
+所有任务都只认 `repository_dispatch`，不依赖 GitHub 自带的 `schedule`，因此不会被 60 天无活动停用，也不会在负载高峰被丢弃。实测从发出请求到开始执行约 1 秒。
 
-**方式一：先用网页手动触发**（验证工作流本身）
+手动补跑一条命令即可：
 
-`Actions → Scheduler self test → Run workflow`。收到邮件说明 Secrets 与 SMTP 正常。这一步不通，先别配调度器。
+```bash
+curl -X POST \
+  -H "Accept: application/vnd.github+json" \
+  -H "Authorization: Bearer <PAT>" \
+  -H "X-GitHub-Api-Version: 2022-11-28" \
+  https://api.github.com/repos/dcgitcode/ai-news-daily/dispatches \
+  -d '{"event_type": "daily-digest", "client_payload": {"dry_run": false}}'
+```
 
-**方式二：外部调度器触发**（验证真正的自动执行）
+| 任务 | event_type | Body |
+| --- | --- | --- |
+| 日报（真实推送） | `daily-digest` | 需带 `"client_payload": {"dry_run": false}` |
+| 日报（只抓取不推送） | `daily-digest` | 省略 `client_payload` |
+| Cloud Studio 签到 | `cloudstudio-checkin` | `{"event_type": "cloudstudio-checkin"}` |
 
-这条链路不经过 GitHub 自带的 `schedule`，所以不会被 60 天无活动停用，也不会在负载高峰被丢弃。实测从发出请求到开始执行约 1 秒。
+也可以在 GitHub 网页 `Actions → 对应工作流 → Run workflow`，但那里默认是 dry_run，不会真发邮件。
 
-想长期无人值守地自动触发，最快是 cron-job.org，不用装任何东西：
+### 3.6 长期自动触发的三种方式
 
-| 字段 | 值 |
-| --- | --- |
-| URL | `https://api.github.com/repos/dcgitcode/ai-news-daily/dispatches` |
-| Method | POST |
-| Header | `Authorization: Bearer <PAT>`、`Accept: application/vnd.github+json`、`Content-Type: application/json` |
-| Body | `{"event_type": "selftest"}` |
-| 周期 | 自选，`*/30 * * * *` 为每 30 分钟 |
+| 方式 | 是否依赖本机开机 | 说明 |
+| --- | --- | --- |
+| Windows 计划任务 | 是 | 本机 `scheduler-local/trigger.ps1`，已配置每日 07:17 签到、08:17 日报；关机错过会补跑 |
+| cron-job.org | 否 | 网页建三条定时任务，打上面的 dispatch 接口 |
+| Cloudflare Workers Cron | 否 | 仓库内 `cloudflare-scheduler/`，需 `wrangler deploy` |
 
-建三条 job，body 的 `event_type` 依次为 `selftest`、`daily-digest`、`cloudstudio-checkin`，时间建议错开整点。
-
-**验证通过后务必清理**：删除 `.github/workflows/selftest.yml`。保留它不会自动触发（没有绑定 cron），但若配了外部定时任务忘了删，它会按周期持续给你发邮件。
+Cloudflare 部署注意：**必须先 `wrangler deploy` 再 `wrangler secret put`**，顺序反了会报 "latest version of your Worker isn't currently deployed"；wrangler 4.129.0 的 deploy 有已知 bug，先升级到最新版。
 
 ### 跨天去重如何保存
 
