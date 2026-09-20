@@ -1,6 +1,7 @@
 name: Cloud Studio daily check-in
 
-# 同样改由外部调度器触发。原实现在 runner 上 sleep 43-282 分钟做随机延迟，
+# 同样改由外部调度器触发（当前：Cloudflare Workers Cron，北京 07:17）。
+# 原实现在 runner 上 sleep 43-282 分钟做随机延迟，
 # 属于长时间空转占用，既违反 GitHub 使用限制、又容易在中途被回收，
 # 现在随机性交给调度端（如需）或直接固定时间。签到是调用内部接口，
 # 固定时间不会被判定为异常。

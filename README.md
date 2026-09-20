@@ -140,25 +140,33 @@ Cloud Studio 签到把 `event_type` 换成 `cloudstudio-checkin`，不带 `clien
 
 PAT 需要 `repo` 权限（经典 PAT）或 `Contents`/`Actions` 写权限（细粒度 PAT）；公共仓库用 `public_repo` 也够。
 
-### 3.4 部署 Cloudflare 调度器
+### 3.4 部署 Cloudflare 调度器（已完成）
+
+**当前状态：已部署并跑通。** Worker 名 `ai-news-scheduler`，两个 cron 已生效，`GITHUB_DISPATCH_TOKEN` 与 `TRIGGER_TOKEN` 两个 secret 均已写入。账号子域、Account ID 等部署细节记在本地 `scheduler-local/deploy-info.md`（不进公开仓库）。
+
+首次部署步骤（存档备查）：
 
 ```bash
 cd cloudflare-scheduler
 npm install -g wrangler
 wrangler login
-wrangler secret put GITHUB_DISPATCH_TOKEN   # 粘贴上面的 PAT
-wrangler secret put TRIGGER_TOKEN           # 自定义一串随机字符串，用于手动触发鉴权
-wrangler deploy
+wrangler deploy                              # 必须先 deploy
+wrangler secret put GITHUB_DISPATCH_TOKEN    # 粘贴上面的 PAT
+wrangler secret put TRIGGER_TOKEN            # 自定义一串随机字符串，用于手动触发鉴权
 ```
 
-部署后访问 `https://ai-news-scheduler.<你的子域>.workers.dev/health` 应返回 JSON。手动补跑：
+本地验证（推荐，因为 `workers.dev` 在国内被 DNS 污染）：
 
 ```bash
-curl -X POST -H "X-Trigger-Token: <TRIGGER_TOKEN>" \
-  https://ai-news-scheduler.<你的子域>.workers.dev/run/daily-digest
+echo "GITHUB_DISPATCH_TOKEN=<PAT>" > .dev.vars   # 已被 .gitignore 忽略
+echo "TRIGGER_TOKEN=<TRIGGER_TOKEN>" >> .dev.vars
+wrangler dev --test-scheduled --port 8787
+curl "http://127.0.0.1:8787/__scheduled?cron=17+23+*+*+*"   # 模拟 cron 触发
 ```
 
 cron 时间写在 `wrangler.jsonc` 的 `triggers.crons`，**UTC 时间**，当前为 UTC 00:17（北京 08:17 日报）和 UTC 23:17（北京 07:17 签到）。改时间只需改这两行和 `src/index.js` 里的 `CRON_TARGETS` 映射。
+
+**`workers.dev` 域名说明**：该域名在国内被 DNS 污染（实测解析到 `108.160.167.30` 等无关 IP），本地无法直连 `/health` 和 `/run/*`。这不影响定时任务——cron 由 Cloudflare 边缘发起，无需本机参与。需要手动补跑时**直接打 GitHub dispatch 接口**（见 3.5），不要依赖 Worker 的 HTTP 端点。
 
 ### 3.5 触发一次任务
 
@@ -185,13 +193,15 @@ curl -X POST \
 
 ### 3.6 长期自动触发的三种方式
 
-| 方式 | 是否依赖本机开机 | 说明 |
+| 方式 | 是否依赖本机开机 | 当前状态 |
 | --- | --- | --- |
-| Windows 计划任务 | 是 | 本机 `scheduler-local/trigger.ps1`，已配置每日 07:17 签到、08:17 日报；关机错过会补跑 |
-| cron-job.org | 否 | 网页建三条定时任务，打上面的 dispatch 接口 |
-| Cloudflare Workers Cron | 否 | 仓库内 `cloudflare-scheduler/`，需 `wrangler deploy` |
+| Cloudflare Workers Cron | 否 | **已启用**。仓库内 `cloudflare-scheduler/`，北京 07:17 签到、08:17 日报 |
+| Windows 计划任务 | 是 | **已禁用**。本机 `scheduler-local/trigger.ps1` 仍保留，需要兜底时重新启用 `AI-Daily-Digest` / `CloudStudio-Checkin` / `CloudStudio-Checkin-OnLogon` |
+| cron-job.org | 否 | 未使用。网页建三条定时任务打 dispatch 接口，可作为第二备份 |
 
-Cloudflare 部署注意：**必须先 `wrangler deploy` 再 `wrangler secret put`**，顺序反了会报 "latest version of your Worker isn't currently deployed"；wrangler 4.129.0 的 deploy 有已知 bug，先升级到最新版。
+云端接管后，本机只保留两项无法上云的任务：`WorkBuddy-Points-Claim`（每日）和 `WorkBuddy-Points-Claim-Logon`（登录时）——WorkBuddy 积分领取要在本机 GUI 上点按钮，只能留在本地。
+
+Cloudflare 部署注意：**必须先 `wrangler deploy` 再 `wrangler secret put`**，顺序反了会报 "latest version of your Worker isn't currently deployed"；wrangler 4.129.0 的 deploy 有已知 bug，先升级到最新版（当前用 4.135.0）。
 
 ### 跨天去重如何保存
 
