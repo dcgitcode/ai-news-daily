@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch, Mock
 
 from news_digest.core import Article, canonical_url, clean, load_state, mark, matches, pending, rank, render, save_state
-from news_digest.delivery import send, wecom_markdown
+from news_digest.delivery import send, wecom_markdown, wecom_app_cards
 from news_digest.sources import collect, extract_image, fetch_feed
 from news_digest.__main__ import main
 
@@ -140,10 +140,11 @@ class DigestTests(unittest.TestCase):
 
     def test_unconfigured_channel_is_skipped(self):
         with tempfile.TemporaryDirectory() as directory:
-            env = {'CHANNELS': 'email,pushplus,wecombot', 'STATE_PATH': str(Path(directory) / 's.json'),
+            env = {'CHANNELS': 'email,pushplus,wecombot,wecom_app', 'STATE_PATH': str(Path(directory) / 's.json'),
                    'REPORT_DIR': directory, 'PUSHPLUS_TOKEN': '', 'WECOM_WEBHOOK': '',
+                   'WECOM_CORPID': '', 'WECOM_CORPSECRET': '', 'WECOM_AGENTID': '', 'WECOM_TOUSER': '',
                    'SMTP_USER': '', 'SMTP_PASSWORD': '', 'EMAIL_TO': ''}
-            # 三个渠道全部缺凭证：send 应一次都不被调用且不抛错。
+            # 四个渠道全部缺凭证：send 应一次都不被调用且不抛错。
             with patch.dict(os.environ, env), patch('sys.argv', ['digest']), \
                  patch('news_digest.__main__.validate_channels'), \
                  patch('news_digest.__main__.load_dotenv'), \
@@ -166,6 +167,45 @@ class DigestTests(unittest.TestCase):
         content = wecom_markdown('AI 每日新闻 测试', plain)
         self.assertLessEqual(len(content.encode('utf-8')), 4096)
         self.assertIn('[超长标题测试第1条', content)
+
+    def test_wecom_app_cards_batch_and_image_rules(self):
+        articles = [self.article(title=f'标题{i}', summary='摘要内容', image=f'https://cdn.example.com/p{i}.jpg')
+                    for i in range(10)]
+        articles[2].image = 'http://insecure.example.com/x.jpg'  # 非 https 应被丢弃
+        messages = wecom_app_cards(articles)
+        self.assertEqual(len(messages), 2)  # 10 条分两批，每批 ≤8
+        self.assertEqual(len(messages[0]['news']['articles']), 8)
+        self.assertEqual(len(messages[1]['news']['articles']), 2)
+        self.assertNotIn('picurl', messages[0]['news']['articles'][2])  # 非 https 无图
+        self.assertEqual(messages[0]['news']['articles'][0]['picurl'], 'https://cdn.example.com/p0.jpg')
+
+    @patch('news_digest.delivery.requests.post')
+    @patch('news_digest.delivery.requests.get')
+    def test_wecom_app_rejects_token_error(self, get, post):
+        get.return_value.json.return_value = {'errcode': 40013}
+        with patch.dict(os.environ, {'WECOM_CORPID': 'c', 'WECOM_CORPSECRET': 's',
+                                     'WECOM_AGENTID': '1', 'WECOM_TOUSER': 'u'}):
+            with self.assertRaises(RuntimeError):
+                send('wecom_app', 't', 'html', 'plain', articles=[self.article()])
+            post.assert_not_called()
+
+    @patch('news_digest.delivery.requests.post')
+    @patch('news_digest.delivery.requests.get')
+    def test_wecom_app_sends_news_cards(self, get, post):
+        get.return_value.json.return_value = {'errcode': 0, 'access_token': 'TOK'}
+        post.return_value.json.return_value = {'errcode': 0, 'msgid': 'M1'}
+        with patch.dict(os.environ, {'WECOM_CORPID': 'c', 'WECOM_CORPSECRET': 's',
+                                     'WECOM_AGENTID': '1', 'WECOM_TOUSER': 'ding'}):
+            articles = [self.article(title=f'标题{i}', summary='摘要内容', image=f'https://cdn.example.com/p{i}.jpg')
+                        for i in range(3)]
+            receipt = send('wecom_app', 't', 'html', 'plain', articles=articles)
+        self.assertEqual(receipt, 'wecom_app_accepted:M1')
+        self.assertIn('message/send', post.call_args.args[0])
+        payload = post.call_args.kwargs['json']
+        self.assertEqual(payload['msgtype'], 'news')
+        self.assertEqual(payload['touser'], 'ding')
+        self.assertEqual(len(payload['news']['articles']), 3)
+        self.assertEqual(payload['news']['articles'][0]['picurl'], 'https://cdn.example.com/p0.jpg')
 
     def test_extract_image_prefers_media_and_validates(self):
         media_entry = {'media_content': [{'url': 'https://cdn.example.com/pic'}],

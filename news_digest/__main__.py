@@ -28,7 +28,8 @@ def main():
     # 渠道凭证未配置时跳过该渠道而不是让整个任务失败（如 wecombot 尚未配 webhook）。
     required_env = {'email': ('SMTP_USER', 'SMTP_PASSWORD', 'EMAIL_TO'),
                     'pushplus': ('PUSHPLUS_TOKEN',),
-                    'wecombot': ('WECOM_WEBHOOK',)}
+                    'wecombot': ('WECOM_WEBHOOK',),
+                    'wecom_app': ('WECOM_CORPID', 'WECOM_CORPSECRET', 'WECOM_AGENTID', 'WECOM_TOUSER')}
     for channel in list(channels):
         absent = [key for key in required_env.get(channel, ()) if not os.getenv(key, '').strip()]
         if absent:
@@ -76,7 +77,10 @@ def main():
                     report['deliveries'][channel] = {'status': 'failed', 'error': 'PayloadTooLarge'}
                     continue
             try:
-                receipt = send(channel, title, delivery_page, delivery_text)
+                if channel == 'wecom_app':
+                    receipt = send(channel, title, delivery_page, delivery_text, articles=items)
+                else:
+                    receipt = send(channel, title, delivery_page, delivery_text)
             except Exception as exc:
                 failed = True
                 report['deliveries'][channel] = {'status': 'failed', 'error': type(exc).__name__}

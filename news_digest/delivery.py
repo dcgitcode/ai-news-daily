@@ -6,6 +6,8 @@ from email.message import EmailMessage
 
 import requests
 
+from .core import Article, canonical_url
+
 
 def required(key):
     value = os.getenv(key, '').strip()
@@ -59,6 +61,49 @@ def wecom_markdown(title, plain):
     return compose(0)
 
 
+def _truncate_bytes(text, limit):
+    """按字节安全截断，避免切断半个中文；超限尾部加省略号。"""
+    data = text.encode('utf-8')
+    if len(data) <= limit:
+        return text
+    return data[:limit - 3].decode('utf-8', 'ignore') + '…'
+
+
+def get_wecom_token(corpid, corpsecret):
+    """企业微信自建应用：用 corpid + corpsecret 换取 access_token（有效期 7200s）。"""
+    response = requests.get('https://qyapi.weixin.qq.com/cgi-bin/gettoken',
+                            params={'corpid': corpid, 'corpsecret': corpsecret}, timeout=(10, 30))
+    response.raise_for_status()
+    data = response.json()
+    if data.get('errcode') != 0:
+        raise RuntimeError(f'WeCom token rejected (errcode {data.get("errcode")})')
+    token = data.get('access_token')
+    if not token:
+        raise RuntimeError('WeCom token missing in response')
+    return token
+
+
+def wecom_app_cards(articles):
+    """把 Article 列表转成企业微信自建应用 news 图文卡片（含 RSS 配图）。
+
+    每条一个卡片，单条消息最多 8 条；超出自动分批。图片仅使用 https 来源，
+    与 render() 的配图策略一致。标题/摘要按字节上限截断防止接口拒绝。
+    """
+    chunks = [articles[i:i + 8] for i in range(0, len(articles), 8)]
+    messages = []
+    for chunk in chunks:
+        arts = []
+        for article in chunk:
+            art = {'title': _truncate_bytes(article.title, 120),
+                   'description': _truncate_bytes(article.summary, 480),
+                   'url': canonical_url(article.url)}
+            if article.image and article.image.startswith('https://'):
+                art['picurl'] = article.image[:1024]
+            arts.append(art)
+        messages.append({'msgtype': 'news', 'news': {'articles': arts}})
+    return messages
+
+
 def validate_channels(channels):
     if not channels:
         raise ValueError('Set CHANNELS=email,pushplus or use --dry-run')
@@ -74,11 +119,14 @@ def validate_channels(channels):
             required('PUSHPLUS_TOKEN')
         elif channel == 'wecombot':
             required('WECOM_WEBHOOK')
+        elif channel == 'wecom_app':
+            for key in ('WECOM_CORPID', 'WECOM_CORPSECRET', 'WECOM_AGENTID', 'WECOM_TOUSER'):
+                required(key)
         else:
             raise ValueError('Unsupported channel: ' + channel)
 
 
-def send(channel, title, page, plain):
+def send(channel, title, page, plain, articles=None):
     if channel == 'email':
         message = EmailMessage()
         message['Subject'] = title
@@ -122,4 +170,23 @@ def send(channel, title, page, plain):
         if data.get('errcode') != 0:
             raise RuntimeError(f'WecomBot rejected request (errcode {data.get("errcode")})')
         return 'wecombot_accepted'
+    if channel == 'wecom_app':
+        if not articles:
+            raise ValueError('wecom_app requires structured articles')
+        corpid = required('WECOM_CORPID')
+        corpsecret = required('WECOM_CORPSECRET')
+        agentid = int(required('WECOM_AGENTID'))
+        touser = required('WECOM_TOUSER')
+        token = get_wecom_token(corpid, corpsecret)
+        receipts = []
+        for payload in wecom_app_cards(articles):
+            payload.update({'touser': touser, 'agentid': agentid})
+            response = requests.post('https://qyapi.weixin.qq.com/cgi-bin/message/send',
+                                     params={'access_token': token}, json=payload, timeout=(10, 30))
+            response.raise_for_status()
+            data = response.json()
+            if data.get('errcode') != 0:
+                raise RuntimeError(f'WeCom app send rejected (errcode {data.get("errcode")})')
+            receipts.append(str(data.get('msgid', 'ok')))
+        return 'wecom_app_accepted:' + ','.join(receipts)
     raise ValueError('Unsupported channel')

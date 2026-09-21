@@ -56,7 +56,7 @@ jobs:
           fi
       - name: Collect and deliver
         env:
-          CHANNELS: email,wecombot
+          CHANNELS: email,wecom_app
           SMTP_HOST: ${{ secrets.SMTP_HOST || 'smtp.163.com' }}
           SMTP_PORT: ${{ secrets.SMTP_PORT || '465' }}
           SMTP_SECURITY: ${{ secrets.SMTP_SECURITY || 'ssl' }}
@@ -64,7 +64,10 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
-          WECOM_WEBHOOK: ${{ secrets.WECOM_WEBHOOK }}
+          WECOM_CORPID: ${{ secrets.WECOM_CORPID }}
+          WECOM_CORPSECRET: ${{ secrets.WECOM_CORPSECRET }}
+          WECOM_AGENTID: ${{ secrets.WECOM_AGENTID }}
+          WECOM_TOUSER: ${{ secrets.WECOM_TOUSER }}
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
