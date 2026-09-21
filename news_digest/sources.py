@@ -1,4 +1,5 @@
 import os
+import re
 from datetime import timedelta
 
 import feedparser
@@ -7,6 +8,41 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from .core import Article, canonical_url, clean, parse_date
+
+IMG_SRC = re.compile(r'<img[^>]+src=["\']([^"\']+)["\']', re.IGNORECASE)
+IMAGE_EXT = re.compile(r'\.(jpe?g|png|webp|gif)([?#]|$)', re.IGNORECASE)
+
+
+def extract_image(entry):
+    """从 RSS 条目抽取配图：优先媒体字段，其次 enclosure，最后正文首个 <img>。
+
+    媒体字段/enclosure 的地址即使无扩展名也接受（CDN 常不带后缀）；
+    正文 <img> 必须带图片扩展名，避免把跳转链接当图。
+    """
+    media_urls = []
+    for media in list(entry.get('media_content') or []) + list(entry.get('media_thumbnail') or []):
+        url = media.get('url')
+        if url and url.startswith(('http://', 'https://')):
+            media_urls.append(url)
+    for enclosure in entry.get('enclosures') or []:
+        href = enclosure.get('href') or enclosure.get('url')
+        if href and href.startswith(('http://', 'https://')):
+            media_urls.append(href)
+    for link in entry.get('links') or []:
+        if link.get('rel') == 'enclosure' and str(link.get('type', '')).startswith('image'):
+            href = link.get('href')
+            if href and href.startswith(('http://', 'https://')):
+                media_urls.append(href)
+    if media_urls:
+        return media_urls[0]
+
+    html_body = str(entry.get('summary') or '')
+    for content in entry.get('content') or []:
+        html_body += str(content.get('value') or '')
+    for url in IMG_SRC.findall(html_body):
+        if url.startswith(('http://', 'https://')) and IMAGE_EXT.search(url):
+            return url
+    return ''
 
 
 def session():
@@ -31,7 +67,8 @@ def fetch_feed(client, url, name, weight, kind='新闻', params=None):
             # Undated entries are excluded rather than labeled as today's news.
             date = parse_date(entry.get('published_parsed') or entry.get('updated_parsed'))
             article = Article(clean(entry.get('title')), canonical_url(entry.get('link', '')),
-                              clean(entry.get('summary', '')), date, name, weight, kind)
+                              clean(entry.get('summary', '')), date, name, weight, kind,
+                              image=extract_image(entry))
             if article.title:
                 articles.append(article)
         except (ValueError, TypeError, OverflowError):

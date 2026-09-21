@@ -25,6 +25,15 @@ def main():
     if not 0.5 <= config['title_similarity'] <= 1 or not 1 <= config['summary_chars'] <= 1000:
         raise ValueError('Invalid title_similarity or summary_chars')
     channels = list(dict.fromkeys(c.strip() for c in os.getenv('CHANNELS', '').split(',') if c.strip()))
+    # 渠道凭证未配置时跳过该渠道而不是让整个任务失败（如 wecombot 尚未配 webhook）。
+    required_env = {'email': ('SMTP_USER', 'SMTP_PASSWORD', 'EMAIL_TO'),
+                    'pushplus': ('PUSHPLUS_TOKEN',),
+                    'wecombot': ('WECOM_WEBHOOK',)}
+    for channel in list(channels):
+        absent = [key for key in required_env.get(channel, ()) if not os.getenv(key, '').strip()]
+        if absent:
+            channels.remove(channel)
+            print(f'WARNING {channel} skipped: missing {absent[0]}')
     if not dry:
         validate_channels(channels)
     state_path = os.getenv('STATE_PATH', 'state/delivery.json')

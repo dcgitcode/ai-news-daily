@@ -86,6 +86,7 @@ class Article:
     stars: int = 0
     score: float = 0
     keywords: list = field(default_factory=list)
+    image: str = ''
 
     @property
     def keys(self):
@@ -171,13 +172,22 @@ def render(articles, title, summary_chars=280):
         summary = article.summary[:summary_chars]
         meta = f'{article.kind} · {article.source} · {article.published:%Y-%m-%d %H:%M UTC} · 分数 {article.score:g}'
         hits = ' / '.join(article.keywords)
-        blocks.append(f'<article><h2>{index}. <a href="{esc(canonical_url(article.url), quote=True)}">{esc(article.title)}</a></h2>'
+        # 配图仅使用来源 RSS 自带的图片地址，渲染时转义防止注入。
+        img = ''
+        if article.image:
+            img = (f'<img src="{esc(article.image, quote=True)}" alt="" loading="lazy" '
+                   f'referrerpolicy="no-referrer">')
+        blocks.append(f'<article>{img}<h2>{index}. <a href="{esc(canonical_url(article.url), quote=True)}">{esc(article.title)}</a></h2>'
                       f'<p class="meta">{esc(meta)}</p><p>{esc(summary)}</p><p class="meta">关键词：{esc(hits)}</p></article>')
         lines.extend([f'{index}. {article.title}', meta, summary, article.url, ''])
     if not articles:
         blocks.append('<p>本次没有符合条件的新闻。</p>')
         lines.append('本次没有符合条件的新闻。')
     page = '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-    page += f'<title>{esc(title)}</title><style>body{{max-width:820px;margin:32px auto;padding:0 20px;font:16px/1.7 system-ui;color:#243247;background:#f5f7fb}}article{{background:white;padding:18px;margin:16px 0;border-radius:12px}}h2{{font-size:20px}}a{{color:#175ca6}}.meta{{color:#657487;font-size:13px}}</style><body>'
+    page += (f'<title>{esc(title)}</title><style>body{{max-width:820px;margin:32px auto;padding:0 20px;'
+             'font:16px/1.7 system-ui;color:#243247;background:#f5f7fb}'
+             'article{background:white;padding:18px;margin:16px 0;border-radius:12px}'
+             'article img{display:block;width:100%;max-height:320px;object-fit:cover;border-radius:8px;margin:0 0 12px}'
+             'h2{font-size:20px}a{color:#175ca6}.meta{color:#657487;font-size:13px}}</style><body>')
     page += f'<h1>{esc(title)}</h1><p>规则筛选 · 来源原文摘录 · 不使用大模型 API</p>' + ''.join(blocks) + '</body></html>'
     return page, '\n'.join(lines)

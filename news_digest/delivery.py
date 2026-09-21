@@ -1,4 +1,5 @@
 import os
+import re
 import smtplib
 import ssl
 from email.message import EmailMessage
@@ -11,6 +12,51 @@ def required(key):
     if not value:
         raise ValueError(f'Missing setting: {key}')
     return value
+
+
+def wecom_markdown(title, plain):
+    """把纯文本日报转成企业微信群机器人 markdown（上限 4096 字节）。
+
+    纯文本结构由 core.render 生成：每个条目依次为「N. 标题 / 元信息 / 摘要 / 链接」。
+    超长时先砍摘要长度，再砍条目数，保证消息能发出去。
+    """
+    items, current = [], None
+    for line in plain.split('\n'):
+        numbered = re.match(r'^(\d+)\. (.+)$', line)
+        if numbered:
+            current = {'no': numbered.group(1), 'title': numbered.group(2),
+                       'source': '', 'summary': '', 'url': ''}
+            items.append(current)
+        elif current is None:
+            continue
+        elif line.startswith('http'):
+            current['url'] = line
+        elif ' · ' in line and '分数' in line:
+            current['source'] = line.split(' · ')[1] if ' · ' in line else ''
+        elif line and not current['summary']:
+            current['summary'] = line
+
+    header = f'## {title}\n'
+    footer = '\n> 完整图文版见邮件'
+
+    def compose(summary_chars):
+        parts = [header]
+        for item in items:
+            line = f'**{item["no"]}. [{item["title"]}]({item["url"]})**' \
+                   f'<font color="comment"> {item["source"]}</font>\n'
+            if summary_chars and item['summary']:
+                line += item['summary'][:summary_chars] + '\n'
+            parts.append(line + '\n')
+        return ''.join(parts) + footer
+
+    for limit in (120, 60, 0):
+        content = compose(limit)
+        if len(content.encode('utf-8')) <= 4000:
+            return content
+    # 仍超长则删减条目，从尾部丢弃。
+    while len(items) > 3 and len(compose(0).encode('utf-8')) > 4000:
+        items.pop()
+    return compose(0)
 
 
 def validate_channels(channels):
@@ -26,6 +72,8 @@ def validate_channels(channels):
                 raise ValueError('Invalid SMTP_PORT')
         elif channel == 'pushplus':
             required('PUSHPLUS_TOKEN')
+        elif channel == 'wecombot':
+            required('WECOM_WEBHOOK')
         else:
             raise ValueError('Unsupported channel: ' + channel)
 
@@ -64,4 +112,14 @@ def send(channel, title, page, plain):
             raise RuntimeError('Pushplus rejected request')
         # 200 means queued, not delivered. Store receipt for provider-side diagnosis.
         return 'pushplus_queued:' + str(data.get('data', ''))
+    if channel == 'wecombot':
+        content = wecom_markdown(title, plain)
+        response = requests.post(required('WECOM_WEBHOOK'), json={
+            'msgtype': 'markdown', 'markdown': {'content': content}}, timeout=(10, 30))
+        response.raise_for_status()
+        data = response.json()
+        # 企业微信成功返回 {"errcode":0}；非 0 一律视为失败。
+        if data.get('errcode') != 0:
+            raise RuntimeError(f'WecomBot rejected request (errcode {data.get("errcode")})')
+        return 'wecombot_accepted'
     raise ValueError('Unsupported channel')
