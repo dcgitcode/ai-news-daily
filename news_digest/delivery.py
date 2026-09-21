@@ -161,8 +161,20 @@ def send(channel, title, page, plain, articles=None):
         # 200 means queued, not delivered. Store receipt for provider-side diagnosis.
         return 'pushplus_queued:' + str(data.get('data', ''))
     if channel == 'wecombot':
+        webhook = required('WECOM_WEBHOOK')
+        receipts = []
+        # 优先用图文卡片（含 RSS 配图，与自建应用同构）；无结构化文章时退回 markdown。
+        if articles:
+            for payload in wecom_app_cards(articles):
+                response = requests.post(webhook, json=payload, timeout=(10, 30))
+                response.raise_for_status()
+                data = response.json()
+                if data.get('errcode') != 0:
+                    raise RuntimeError(f'WecomBot rejected request (errcode {data.get("errcode")})')
+                receipts.append(str(data.get('msgid', 'ok')))
+            return 'wecombot_accepted:' + ','.join(receipts)
         content = wecom_markdown(title, plain)
-        response = requests.post(required('WECOM_WEBHOOK'), json={
+        response = requests.post(webhook, json={
             'msgtype': 'markdown', 'markdown': {'content': content}}, timeout=(10, 30))
         response.raise_for_status()
         data = response.json()

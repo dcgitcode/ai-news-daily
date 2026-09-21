@@ -207,6 +207,19 @@ class DigestTests(unittest.TestCase):
         self.assertEqual(len(payload['news']['articles']), 3)
         self.assertEqual(payload['news']['articles'][0]['picurl'], 'https://cdn.example.com/p0.jpg')
 
+    @patch('news_digest.delivery.requests.post')
+    def test_wecombot_sends_news_cards(self, post):
+        post.return_value.json.return_value = {'errcode': 0, 'msgid': 'M2'}
+        with patch.dict(os.environ, {'WECOM_WEBHOOK': 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc'}):
+            articles = [self.article(title=f'标题{i}', summary='摘要内容', image=f'https://cdn.example.com/p{i}.jpg')
+                        for i in range(3)]
+            receipt = send('wecombot', 't', 'html', 'plain', articles=articles)
+        self.assertEqual(receipt, 'wecombot_accepted:M2')
+        payload = post.call_args.kwargs['json']
+        self.assertEqual(payload['msgtype'], 'news')
+        self.assertEqual(len(payload['news']['articles']), 3)
+        self.assertEqual(payload['news']['articles'][0]['picurl'], 'https://cdn.example.com/p0.jpg')
+
     def test_extract_image_prefers_media_and_validates(self):
         media_entry = {'media_content': [{'url': 'https://cdn.example.com/pic'}],
                        'summary': '<img src="https://x.example.com/a.jpg">'}

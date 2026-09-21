@@ -56,7 +56,7 @@ jobs:
           fi
       - name: Collect and deliver
         env:
-          CHANNELS: email,wecom_app
+          CHANNELS: email,wecombot
           SMTP_HOST: ${{ secrets.SMTP_HOST || 'smtp.163.com' }}
           SMTP_PORT: ${{ secrets.SMTP_PORT || '465' }}
           SMTP_SECURITY: ${{ secrets.SMTP_SECURITY || 'ssl' }}
