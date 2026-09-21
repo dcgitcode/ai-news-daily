@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch, Mock
 
 from news_digest.core import Article, canonical_url, clean, load_state, mark, matches, pending, rank, render, save_state
-from news_digest.delivery import send, wecom_markdown, wecom_app_cards
+from news_digest.delivery import send, wecom_markdown, wecom_app_cards, pushplus_html
 from news_digest.sources import collect, extract_image, fetch_feed
 from news_digest.__main__ import main
 
@@ -219,6 +219,29 @@ class DigestTests(unittest.TestCase):
         self.assertEqual(payload['msgtype'], 'news')
         self.assertEqual(len(payload['news']['articles']), 3)
         self.assertEqual(payload['news']['articles'][0]['picurl'], 'https://cdn.example.com/p0.jpg')
+
+    def test_pushplus_html_embeds_https_images_only(self):
+        articles = [self.article(title='带图新闻', summary='摘要', image='https://cdn.example.com/p.jpg'),
+                    self.article(title='无图新闻', summary='另一条', image=''),
+                    self.article(title='http图被忽略', summary='x', image='http://insecure.example.com/p.jpg')]
+        content = pushplus_html('AI 每日新闻 测试', articles)
+        self.assertIn('<img src="https://cdn.example.com/p.jpg"', content)
+        self.assertNotIn('http://insecure.example.com/p.jpg', content)
+        self.assertNotIn('<img src=""', content)
+        # HTML 转义防注入：标题里的尖括号不应破坏结构。
+        evil = [self.article(title='<script>x</script>', summary='a', image='')]
+        self.assertIn('&lt;script&gt;', pushplus_html('t', evil))
+
+    @patch('news_digest.delivery.requests.post')
+    def test_pushplus_send_uses_html_template_with_images(self, post):
+        post.return_value.json.return_value = {'code': 200, 'data': 'receipt'}
+        with patch.dict(os.environ, {'PUSHPLUS_TOKEN': 'tok'}):
+            articles = [self.article(title='标题', summary='摘要', image='https://cdn.example.com/p.jpg')]
+            receipt = send('pushplus', 't', 'html', 'plain', articles=articles)
+        self.assertEqual(receipt, 'pushplus_queued:receipt')
+        payload = post.call_args.kwargs['json']
+        self.assertEqual(payload['template'], 'html')
+        self.assertIn('<img src="https://cdn.example.com/p.jpg"', payload['content'])
 
     def test_extract_image_prefers_media_and_validates(self):
         media_entry = {'media_content': [{'url': 'https://cdn.example.com/pic'}],

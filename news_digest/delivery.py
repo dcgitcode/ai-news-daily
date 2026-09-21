@@ -1,3 +1,4 @@
+import html
 import os
 import re
 import smtplib
@@ -104,6 +105,31 @@ def wecom_app_cards(articles):
     return messages
 
 
+def pushplus_html(title, articles):
+    """把图文日报渲染成 PushPlus 的 HTML 模板内容（个人微信消息）。
+
+    每条含标题链接、来源、摘要与 RSS 配图（仅 https，否则省略图片标签），
+    图片用 <img> 内联，符合 PushPlus 文档要求（图片地址须 https）。
+    无配图或被防盗链时仍能正常显示文字，属于降级而非失败。
+    """
+    esc = html.escape
+    blocks = [f'<h2>{esc(title)}</h2><hr>']
+    for article in articles:
+        url = canonical_url(article.url)
+        meta = f'{esc(article.source)} · {article.published:%Y-%m-%d}'
+        block = ['<div>']
+        block.append(f'<a href="{esc(url, quote=True)}"><b>{esc(article.title)}</b></a><br>')
+        block.append(f'<font color="gray">{meta}</font><br>')
+        if article.summary:
+            block.append(f'<p>{esc(article.summary)}</p>')
+        if article.image and article.image.startswith('https://'):
+            block.append(f'<img src="{esc(article.image, quote=True)}" style="max-width:100%"><br>')
+        block.append('</div><hr>')
+        blocks.append(''.join(block))
+    blocks.append('<p><font color="gray">完整图文版见邮件</font></p>')
+    return ''.join(blocks)
+
+
 def validate_channels(channels):
     if not channels:
         raise ValueError('Set CHANNELS=email,pushplus or use --dry-run')
@@ -151,9 +177,15 @@ def send(channel, title, page, plain, articles=None):
                 raise RuntimeError('One or more email recipients were refused')
         return 'smtp_accepted'
     if channel == 'pushplus':
+        token = required('PUSHPLUS_TOKEN')
+        # 有结构化图文时走 HTML 模板（带 RSS 配图）；否则退回纯文本，保证能用。
+        if articles:
+            content, template = pushplus_html(title, articles), 'html'
+        else:
+            content, template = plain, 'txt'
         response = requests.post('https://www.pushplus.plus/send', json={
-            'token': required('PUSHPLUS_TOKEN'), 'title': title,
-            'content': plain, 'template': 'txt', 'channel': 'wechat'}, timeout=(10, 30))
+            'token': token, 'title': title,
+            'content': content, 'template': template, 'channel': 'wechat'}, timeout=(10, 30))
         response.raise_for_status()
         data = response.json()
         if data.get('code') != 200:

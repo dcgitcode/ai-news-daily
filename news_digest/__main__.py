@@ -77,7 +77,7 @@ def main():
                     report['deliveries'][channel] = {'status': 'failed', 'error': 'PayloadTooLarge'}
                     continue
             try:
-                if channel in ('wecom_app', 'wecombot'):
+                if channel in ('wecom_app', 'wecombot', 'pushplus'):
                     receipt = send(channel, title, delivery_page, delivery_text, articles=items)
                 else:
                     receipt = send(channel, title, delivery_page, delivery_text)
