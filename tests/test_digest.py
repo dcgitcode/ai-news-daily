@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch, Mock
 
 from news_digest.core import Article, canonical_url, clean, load_state, mark, matches, pending, rank, render, save_state
-from news_digest.delivery import send, wecom_markdown, wecom_app_cards, pushplus_html
+from news_digest.delivery import send, wecom_markdown, wecom_app_cards, pushplus_html, telegram_html
 from news_digest.sources import collect, extract_image, fetch_feed
 from news_digest.__main__ import main
 
@@ -140,9 +140,10 @@ class DigestTests(unittest.TestCase):
 
     def test_unconfigured_channel_is_skipped(self):
         with tempfile.TemporaryDirectory() as directory:
-            env = {'CHANNELS': 'email,pushplus,wecombot,wecom_app', 'STATE_PATH': str(Path(directory) / 's.json'),
+            env = {'CHANNELS': 'email,pushplus,wecombot,wecom_app,telegram', 'STATE_PATH': str(Path(directory) / 's.json'),
                    'REPORT_DIR': directory, 'PUSHPLUS_TOKEN': '', 'WECOM_WEBHOOK': '',
                    'WECOM_CORPID': '', 'WECOM_CORPSECRET': '', 'WECOM_AGENTID': '', 'WECOM_TOUSER': '',
+                   'TELEGRAM_BOT_TOKEN': '', 'TELEGRAM_CHAT_ID': '',
                    'SMTP_USER': '', 'SMTP_PASSWORD': '', 'EMAIL_TO': ''}
             # 四个渠道全部缺凭证：send 应一次都不被调用且不抛错。
             with patch.dict(os.environ, env), patch('sys.argv', ['digest']), \
@@ -242,6 +243,29 @@ class DigestTests(unittest.TestCase):
         payload = post.call_args.kwargs['json']
         self.assertEqual(payload['template'], 'html')
         self.assertIn('<img src="https://cdn.example.com/p.jpg"', payload['content'])
+
+    def test_telegram_html_escapes_and_truncates(self):
+        articles = [self.article(title='<b>标题</b>', summary='摘要', image='https://cdn.example.com/p.jpg'),
+                    self.article(title='第二条', summary='x' * 700, image='')]
+        content = telegram_html('AI 每日新闻 测试', articles)
+        self.assertIn('&lt;b&gt;标题&lt;/b&gt;', content)  # 标题 HTML 转义
+        self.assertIn('<a href="https://example.com/a"', content)  # 链接用 canonical_url
+        self.assertNotIn('cdn.example.com/p.jpg', content)  # 配图走 sendPhoto，不在文本
+        self.assertNotIn('x' * 700, content)  # 摘要超 600 截断
+        self.assertIn('x' * 600, content)
+
+    @patch('news_digest.delivery.requests.post')
+    def test_telegram_send_splits_and_sends_photos(self, post):
+        post.return_value.json.return_value = {'ok': True, 'result': {'message_id': 7}}
+        with patch.dict(os.environ, {'TELEGRAM_BOT_TOKEN': 'tok', 'TELEGRAM_CHAT_ID': '123'}):
+            articles = [self.article(title='带图', summary='s', image='https://cdn.example.com/p.jpg'),
+                        self.article(title='无图', summary='t', image='')]
+            receipt = send('telegram', 't', 'html', 'plain', articles=articles)
+        self.assertTrue(receipt.startswith('telegram_accepted:'))
+        # 1 条文本（sendMessage）+ 1 张配图（sendPhoto）
+        urls = [c.args[0] for c in post.call_args_list]
+        self.assertEqual(sum('sendMessage' in u for u in urls), 1)
+        self.assertEqual(sum('sendPhoto' in u for u in urls), 1)
 
     def test_extract_image_prefers_media_and_validates(self):
         media_entry = {'media_content': [{'url': 'https://cdn.example.com/pic'}],

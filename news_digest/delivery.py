@@ -130,6 +130,64 @@ def pushplus_html(title, articles):
     return ''.join(blocks)
 
 
+def telegram_html(title, articles):
+    """把图文日报渲染成 Telegram HTML 消息（标题链接 + 来源 + 摘要）。
+
+    用 Telegram 支持的有限 HTML 标签（<b>/<a>/<i>），转义防注入。
+    图片不走内联，由 send() 单独以 sendPhoto 发送，避免单张大图撑爆文本。
+    """
+    esc = html.escape
+    parts = [f'<b>{esc(title)}</b>', '']
+    for index, article in enumerate(articles, 1):
+        url = canonical_url(article.url)
+        block = [f'{index}. <a href="{esc(url, quote=True)}">{esc(article.title)}</a>',
+                 f'{esc(article.source)} · {article.published:%Y-%m-%d}']
+        if article.summary:
+            block.append(esc(article.summary)[:600])
+        parts.append('\n'.join(block))
+    parts.append('')
+    parts.append('<i>完整图文版见邮件</i>')
+    return '\n'.join(parts)
+
+
+def _chunk_telegram(text, limit=4000):
+    """按空行切块，保证每条消息不超过 Telegram 的 4096 字符上限。"""
+    if len(text) <= limit:
+        return [text]
+    chunks, current = [], ''
+    for block in text.split('\n\n'):
+        if current and len(current) + len(block) + 2 > limit:
+            chunks.append(current)
+            current = block
+        else:
+            current = (current + '\n\n' + block) if current else block
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _tg_send(token, chat_id, text, parse_mode):
+    response = requests.post(f'https://api.telegram.org/bot{token}/sendMessage',
+                             json={'chat_id': chat_id, 'text': text, 'parse_mode': parse_mode,
+                                   'disable_web_page_preview': False}, timeout=(10, 30))
+    response.raise_for_status()
+    data = response.json()
+    if not data.get('ok'):
+        raise RuntimeError(f'Telegram sendMessage failed: {data.get("error_code")} {data.get("description")}')
+    return str(data.get('result', {}).get('message_id', 'ok'))
+
+
+def _tg_send_photo(token, chat_id, photo, caption):
+    response = requests.post(f'https://api.telegram.org/bot{token}/sendPhoto',
+                             json={'chat_id': chat_id, 'photo': photo, 'caption': caption,
+                                   'parse_mode': 'HTML'}, timeout=(10, 30))
+    response.raise_for_status()
+    data = response.json()
+    if not data.get('ok'):
+        raise RuntimeError(f'Telegram sendPhoto failed: {data.get("error_code")} {data.get("description")}')
+    return str(data.get('result', {}).get('message_id', 'ok'))
+
+
 def validate_channels(channels):
     if not channels:
         raise ValueError('Set CHANNELS=email,pushplus or use --dry-run')
@@ -148,6 +206,9 @@ def validate_channels(channels):
         elif channel == 'wecom_app':
             for key in ('WECOM_CORPID', 'WECOM_CORPSECRET', 'WECOM_AGENTID', 'WECOM_TOUSER'):
                 required(key)
+        elif channel == 'telegram':
+            required('TELEGRAM_BOT_TOKEN')
+            required('TELEGRAM_CHAT_ID')
         else:
             raise ValueError('Unsupported channel: ' + channel)
 
@@ -233,4 +294,20 @@ def send(channel, title, page, plain, articles=None):
                 raise RuntimeError(f'WeCom app send rejected (errcode {data.get("errcode")})')
             receipts.append(str(data.get('msgid', 'ok')))
         return 'wecom_app_accepted:' + ','.join(receipts)
+    if channel == 'telegram':
+        token = required('TELEGRAM_BOT_TOKEN')
+        chat_id = required('TELEGRAM_CHAT_ID')
+        arts = articles or []
+        receipts = []
+        text = telegram_html(title, arts) if arts else html.escape(plain)
+        for chunk in _chunk_telegram(text):
+            receipts.append(_tg_send(token, chat_id, chunk, 'HTML'))
+        # 配图单独以 sendPhoto 发送（最多 8 张），单张失败不影响整体推送。
+        for article in arts[:8]:
+            if article.image and article.image.startswith('https://'):
+                try:
+                    receipts.append(_tg_send_photo(token, chat_id, article.image, article.title[:1024]))
+                except Exception:
+                    pass
+        return 'telegram_accepted:' + ','.join(receipts)
     raise ValueError('Unsupported channel')

@@ -56,7 +56,7 @@ jobs:
           fi
       - name: Collect and deliver
         env:
-          CHANNELS: email,pushplus
+          CHANNELS: email,telegram
           SMTP_HOST: ${{ secrets.SMTP_HOST || 'smtp.163.com' }}
           SMTP_PORT: ${{ secrets.SMTP_PORT || '465' }}
           SMTP_SECURITY: ${{ secrets.SMTP_SECURITY || 'ssl' }}
@@ -68,7 +68,8 @@ jobs:
           WECOM_CORPSECRET: ${{ secrets.WECOM_CORPSECRET }}
           WECOM_AGENTID: ${{ secrets.WECOM_AGENTID }}
           WECOM_TOUSER: ${{ secrets.WECOM_TOUSER }}
-          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
