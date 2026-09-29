@@ -26,9 +26,34 @@ from .sources import extract_image, session
 ARXIV_PREFIX = re.compile(r'^arXiv:\S+\s+Announce Type:\s*\w+\s*Abstract:\s*', re.IGNORECASE)
 
 # 具身智能 / 机器人方向关键词，对齐丁老师的教学与研究方向。
+# 这是面向 arXiv 英文正文的匹配词，故必须是英文。
 DEFAULT_ARXIV_KEYWORDS = ['embodied', 'vision-language-action', 'VLA', 'robot learning', 'humanoid',
                           'sim-to-real', 'sim2real', 'manipulation', 'legged', 'grasping',
                           'imitation learning', 'world model', 'diffusion policy']
+
+# 上屏用的中文标签。匹配词是英文，但展示在「关键词：」后面的是给人看的——
+# 标题正文都中文化了，末尾再挂一串英文标签等于把问题留在最后一厘米。
+# 未收录的词原样输出，新增关键词不会因此丢失。
+ARXIV_KEYWORD_ZH = {
+    'embodied': '具身智能',
+    'vision-language-action': '视觉-语言-动作',
+    'VLA': 'VLA',
+    'robot learning': '机器人学习',
+    'humanoid': '人形机器人',
+    'sim-to-real': '仿真到现实',
+    'sim2real': '仿真到现实',
+    'manipulation': '操作',
+    'legged': '足式机器人',
+    'grasping': '抓取',
+    'imitation learning': '模仿学习',
+    'world model': '世界模型',
+    'diffusion policy': '扩散策略',
+}
+
+
+def keyword_labels(hits):
+    """把命中的英文匹配词转成中文标签并去重保序。"""
+    return list(dict.fromkeys(ARXIV_KEYWORD_ZH.get(k, k) for k in hits))
 
 # 中文源关键词。中文词用子串匹配（matches 对非 ASCII 不做词边界），够用且不会误伤。
 DEFAULT_CHINESE_KEYWORDS = ['具身', '机器人', '人形', '机械臂', '抓取', '四足', '世界模型',
@@ -63,19 +88,23 @@ def fetch_arxiv(client, config, now):
                     continue
                 title = clean(entry.get('title'))
                 abstract = ARXIV_PREFIX.sub('', clean(entry.get('summary')))
-                if not any(matches(k, title + ' ' + abstract) for k in keywords):
+                # 命中词保留下来随条目上屏（展示真实命中项，而不是空标签）。
+                hits = [k for k in keywords if matches(k, title + ' ' + abstract)]
+                if not hits:
                     continue
                 url = canonical_url(entry.get('link', ''))
                 if url in seen:
                     continue
                 seen.add(url)
-                raw.append((title, abstract, url, parse_date(entry.get('published_parsed')) or now))
+                raw.append((title, abstract, url,
+                            parse_date(entry.get('published_parsed')) or now, hits))
             except (ValueError, TypeError, OverflowError):
                 continue
     raw.sort(key=lambda item: item[3], reverse=True)
 
     papers = []
-    for title, abstract, url, published in raw[:max_results]:
+    for title, abstract, url, published, hits in raw[:max_results]:
+        labels = keyword_labels(hits)
         zh_title, zh_summary = ('', '')
         if translate:
             zh_title, zh_summary = llm.digest_zh(title, abstract)
@@ -83,12 +112,14 @@ def fetch_arxiv(client, config, now):
             # 英文原标题留在 title、中文译文放 subtitle 另起一行：
             # 保留原文便于对照与检索，去重哈希也基于原文、跨天稳定。
             papers.append(Article(title, url, zh_summary, published, 'arXiv 论文', 0, '论文',
-                                  subtitle=zh_title))
+                                  keywords=labels, subtitle=zh_title))
         elif translate:
             # 中文速读不可用：只给标题+链接。不放整段英文摘要——通篇英文正是要解决的问题。
-            papers.append(Article(title, url, '', published, 'arXiv 论文', 0, '论文'))
+            papers.append(Article(title, url, '', published, 'arXiv 论文', 0, '论文',
+                                  keywords=labels))
         else:
-            papers.append(Article(title, url, abstract[:240], published, 'arXiv 论文', 0, '论文'))
+            papers.append(Article(title, url, abstract[:240], published, 'arXiv 论文', 0, '论文',
+                                  keywords=labels))
     return papers
 
 
@@ -149,7 +180,8 @@ def fetch_chinese(client, config, now):
                 summary = clean(entry.get('summary') or
                                 next((c.get('value') for c in entry.get('content') or []), ''))
                 scope = title if source.get('title_only') else title + ' ' + summary[:300]
-                if not any(matches(k, scope) for k in keywords):
+                hits = [k for k in keywords if matches(k, scope)]
+                if not hits:
                     continue
                 url = canonical_url(entry.get('link', ''))
                 if url in seen:
@@ -167,7 +199,8 @@ def fetch_chinese(client, config, now):
                 seen.add(url)
                 matched += 1
                 items.append(Article(title, url, summary[:220], published, source['name'],
-                                     0, '资讯', image=extract_image(entry) or ''))
+                                     0, '资讯', keywords=hits,
+                                     image=extract_image(entry) or ''))
             except (ValueError, TypeError, OverflowError, AttributeError):
                 continue
     items.sort(key=lambda article: article.published, reverse=True)

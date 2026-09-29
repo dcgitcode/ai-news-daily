@@ -178,6 +178,9 @@ def render(articles, title, summary_chars=280, note=None):
         summary = article.summary[:summary_chars]
         meta = f'{article.kind} · {article.source} · {article.published:%Y-%m-%d %H:%M UTC} · 分数 {article.score:g}'
         hits = ' / '.join(article.keywords)
+        # 关键词为空则整行不渲染——空标签「关键词：」是排版噪声。
+        # 速递的条目来自固定筛选，未必带关键词；主日报由关键词筛出，一定有值。
+        kw = f'<p class="meta">关键词：{esc(hits)}</p>' if hits else ''
         # 配图仅使用来源 RSS 自带的图片地址，渲染时转义防止注入。
         img = ''
         if article.image:
@@ -187,7 +190,7 @@ def render(articles, title, summary_chars=280, note=None):
         subtitle_html = f'<p class="subtitle">{esc(article.subtitle)}</p>' if article.subtitle else ''
         blocks.append(f'<article>{img}<h2>{index}. <a href="{esc(canonical_url(article.url), quote=True)}">{esc(article.title)}</a></h2>'
                       f'{subtitle_html}'
-                      f'<p class="meta">{esc(meta)}</p><p>{esc(summary)}</p><p class="meta">关键词：{esc(hits)}</p></article>')
+                      f'<p class="meta">{esc(meta)}</p><p>{esc(summary)}</p>{kw}</article>')
         # 纯文本用两个空格缩进表示「从属于上一行的译文标题」，wecom_markdown 依赖这个约定。
         lines.append(f'{index}. {article.title}')
         if article.subtitle:

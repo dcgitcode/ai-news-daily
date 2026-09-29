@@ -12,7 +12,8 @@ from news_digest.core import Article, canonical_url, clean, load_state, mark, ma
 from news_digest.delivery import (send, wecom_markdown, wecom_app_cards, pushplus_html,
                                   serverchan_markdown, serverchan_url, telegram_html)
 from news_digest.sources import collect, extract_image, fetch_feed
-from news_digest.extras import collect_extras, fetch_arxiv, fetch_chinese, fetch_github, fetch_hackernews, article_lead
+from news_digest.extras import (collect_extras, fetch_arxiv, fetch_chinese, fetch_github,
+                                fetch_hackernews, article_lead, keyword_labels)
 from news_digest import llm
 from news_digest.__main__ import main
 
@@ -396,6 +397,14 @@ class DigestTests(unittest.TestCase):
         self.assertEqual(papers[0].source, 'arXiv 论文')
         self.assertIn('embodied manipulation', papers[0].summary)
         self.assertNotIn('Announce Type', papers[0].summary)  # 前缀已剥掉
+        # 命中的词要随条目带出来，供上屏显示（否则速递里关键词一栏是空的），
+        # 且转成中文标签——匹配词是英文，但展示要给人看懂。
+        self.assertEqual(papers[0].keywords, ['具身智能', '机器人学习'])
+
+    def test_keyword_labels_keeps_unknown_and_dedupes(self):
+        # 未收录的词原样输出（新增关键词不会丢），同义匹配词映射后去重。
+        self.assertEqual(keyword_labels(['sim-to-real', 'sim2real', 'brand-new-term']),
+                         ['仿真到现实', 'brand-new-term'])
 
     ARXIV_ATOM = (b'<rss version="2.0" xmlns:arxiv="http://arxiv.org/schemas/atom"><channel>'
                   b'<item><title>Embodied Robot Learning in Simulation</title>'
@@ -529,6 +538,17 @@ class DigestTests(unittest.TestCase):
         # 中文源条目本来就没有译文，不该凭空多出一行。
         _, plain = render([self.article(title='李飞飞创业公司被收购', summary='摘要')], '速递', 100)
         self.assertNotIn('  \n', plain)
+
+    def test_render_omits_keyword_line_when_empty(self):
+        # 丁老师反馈「关键词：」后面是空的。速递条目未必带关键词，空标签必须整行消失。
+        page, _ = render([self.article(title='论文', summary='速读')], '速递', 100)
+        self.assertNotIn('关键词', page)
+
+    def test_render_shows_matched_keywords(self):
+        # 有命中关键词时要真的显示出来，而不是被一并藏掉。
+        page, _ = render([self.article(title='论文', summary='速读',
+                                       keywords=['具身', '机器人'])], '速递', 100)
+        self.assertIn('关键词：具身 / 机器人', page)
 
     def test_subtitle_reaches_serverchan_telegram_pushplus(self):
         article = self.article(title='Humanoid Badminton', subtitle='人形机器人打羽毛球')
