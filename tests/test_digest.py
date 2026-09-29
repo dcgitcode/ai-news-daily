@@ -14,7 +14,7 @@ from news_digest.delivery import (send, wecom_markdown, wecom_app_cards, pushplu
 from news_digest.sources import collect, extract_image, fetch_feed
 from news_digest.extras import (collect_extras, fetch_arxiv, fetch_chinese, fetch_github,
                                 fetch_hackernews, article_lead, keyword_labels)
-from news_digest import llm
+from news_digest import llm, wechat
 from news_digest.__main__ import main
 
 
@@ -737,6 +737,182 @@ class DigestTests(unittest.TestCase):
         bad_entry = {'summary': '<img src="javascript:alert(1)"><img src="/relative.png">'}
         self.assertEqual(extract_image(bad_entry), '')
         self.assertEqual(extract_image({}), '')
+
+
+class WechatDraftTests(unittest.TestCase):
+    """公众号草稿箱：只做草稿是硬约束（个人主体账号的发布接口已被微信回收）。"""
+
+    def setUp(self):
+        self.now = datetime(2026, 9, 29, 4, 0, tzinfo=timezone.utc)
+        self.article = Article('Humanoid Badminton: Dynamic Racket Skills',
+                               'https://arxiv.org/abs/2509.00001',
+                               '用有限的人体动作数据学习动态挥拍技能。', self.now,
+                               'arXiv 论文', 0, '论文', subtitle='人形机器人打羽毛球')
+
+    def test_entry_keeps_original_title_and_subtitle_on_separate_lines(self):
+        markup = wechat.entry_html(1, self.article)
+        self.assertIn('Humanoid Badminton', markup)
+        self.assertIn('人形机器人打羽毛球', markup)
+        # 原文与译题必须是两个独立段落，不能挤在同一行。
+        self.assertEqual(markup.count('<p '), 4)  # 标题 / 译题 / 摘要 / 来源
+
+    def test_entry_skips_subtitle_when_absent(self):
+        plain = Article('量子位：某公司发布新模型', 'https://example.com/a', '摘要正文',
+                        self.now, '量子位', 0, '资讯')
+        self.assertEqual(wechat.entry_html(1, plain).count('<p '), 3)
+
+    def test_entry_escapes_html(self):
+        evil = Article('<script>alert(1)</script>', 'https://example.com/a',
+                       '<img onerror=x>', self.now, '<b>src</b>', 0, '资讯')
+        markup = wechat.entry_html(1, evil)
+        self.assertNotIn('<script>', markup)
+        self.assertNotIn('<img onerror', markup)
+        self.assertIn('&lt;script&gt;', markup)
+
+    def test_entry_drops_external_links(self):
+        # 公众号正文里的外链会被微信过滤，放了也是纯文本 —— 干脆不生成 <a>。
+        self.assertNotIn('<a ', wechat.entry_html(1, self.article))
+
+    def test_section_renders_heading_and_numbers_items(self):
+        markup = wechat.section_html('今日要闻', [self.article, self.article])
+        self.assertIn('今日要闻', markup)
+        self.assertIn('>1. ', markup)
+        self.assertIn('>2. ', markup)
+
+    def test_render_article_skips_empty_sections(self):
+        content = wechat.render_article([('今日要闻', [self.article]), ('专业资讯速递', [])], note='说明')
+        self.assertIn('今日要闻', content)
+        self.assertNotIn('专业资讯速递', content)  # 空小节不落一个光杆标题
+
+    def test_entry_caps_summary_length(self):
+        # 中文媒体正文首段实测可到 2800+ 字，不设限的话 20 条能拼出 5.6 万字符直接超微信上限。
+        long = Article('标题', 'https://example.com/a', '正' * 3000, self.now, '量子位', 0, '资讯')
+        markup = wechat.entry_html(1, long)
+        self.assertIn('正' * wechat.SUMMARY_CHARS, markup)
+        self.assertNotIn('正' * (wechat.SUMMARY_CHARS + 1), markup)
+
+    def test_render_article_drops_tail_entries_to_fit(self):
+        # 放不下时从末尾丢条目，且绝不返回超限正文（微信会直接拒收）。
+        items = [Article(f'标题{i}', f'https://example.com/{i}', '摘要' * 400,
+                         self.now, 'test', 0, '资讯') for i in range(30)]
+        content = wechat.render_article([('今日要闻', items)], note='说明')
+        self.assertLessEqual(len(content), wechat.MAX_CONTENT_CHARS)
+        self.assertIn('标题0', content)          # 头部的条目保住
+        self.assertNotIn('标题29', content)      # 末尾的被丢
+        self.assertEqual(len(items), 30)         # 不改动调用方的列表
+
+    def test_render_article_prioritizes_main_news_over_extras(self):
+        main = [Article(f'要闻{i}', f'https://example.com/m{i}', '正文' * 400,
+                        self.now, 'test', 0, '新闻') for i in range(20)]
+        extras = [Article(f'速递{i}', f'https://example.com/e{i}', '正文' * 400,
+                          self.now, 'test', 0, '论文') for i in range(20)]
+        content = wechat.render_article([('今日要闻', main), ('专业资讯速递', extras)], note='说明')
+        self.assertLessEqual(len(content), wechat.MAX_CONTENT_CHARS)
+        self.assertIn('要闻0', content)
+        # 速递是补充内容，先被牺牲。
+        self.assertNotIn('速递19', content)
+
+    def test_clip_bytes_never_splits_a_chinese_char(self):
+        clipped = wechat._clip_bytes('机' * 40, 60)
+        self.assertLessEqual(len(clipped.encode('utf-8')), 60)
+        clipped.encode('utf-8').decode('utf-8')  # 合法 UTF-8，不会出现半个汉字
+        self.assertEqual(wechat._clip_bytes('短标题', 60), '短标题')
+
+    def test_credentials_requires_both_values(self):
+        with patch.dict(os.environ, {'WECHAT_APPID': '', 'WECHAT_SECRET': ''}, clear=False):
+            with self.assertRaises(RuntimeError):
+                wechat.credentials()
+        with patch.dict(os.environ, {'WECHAT_APPID': 'wx1', 'WECHAT_SECRET': ''}, clear=False):
+            with self.assertRaises(RuntimeError):
+                wechat.credentials()
+
+    def test_token_is_cached_and_bound_to_appid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / 'token.json'
+            env = {'WECHAT_APPID': 'wx1', 'WECHAT_SECRET': 's1', 'WECHAT_TOKEN_CACHE': str(cache)}
+            response = Mock()
+            response.json.return_value = {'access_token': 'tok-1', 'expires_in': 7200}
+            with patch.dict(os.environ, env, clear=False), \
+                    patch('news_digest.wechat.requests.get', return_value=response) as get:
+                self.assertEqual(wechat.access_token(), 'tok-1')
+                self.assertEqual(wechat.access_token(), 'tok-1')  # 第二次走缓存
+                self.assertEqual(get.call_count, 1)
+            # 换了 AppID，旧 token 必须作废。
+            response2 = Mock()
+            response2.json.return_value = {'access_token': 'tok-2', 'expires_in': 7200}
+            with patch.dict(os.environ, dict(env, WECHAT_APPID='wx2'), clear=False), \
+                    patch('news_digest.wechat.requests.get', return_value=response2):
+                self.assertEqual(wechat.access_token(), 'tok-2')
+
+    def test_token_error_never_leaks_secret(self):
+        response = Mock()
+        response.json.return_value = {'errcode': 40164, 'errmsg': 'invalid ip 1.2.3.4'}
+        with patch.dict(os.environ, {'WECHAT_APPID': 'wx1', 'WECHAT_SECRET': 'super-secret'},
+                        clear=False), \
+                patch('news_digest.wechat.requests.get', return_value=response):
+            with self.assertRaises(RuntimeError) as ctx:
+                wechat.access_token(force=True)
+        message = str(ctx.exception)
+        self.assertIn('40164', message)
+        self.assertNotIn('super-secret', message)
+
+    def test_add_draft_clips_title_and_digest(self):
+        response = Mock()
+        response.json.return_value = {'media_id': 'draft-1'}
+        with patch.dict(os.environ, {'WECHAT_APPID': 'wx1', 'WECHAT_SECRET': 's1'}, clear=False), \
+                patch('news_digest.wechat.access_token', return_value='tok'), \
+                patch('news_digest.wechat.requests.post', return_value=response) as post:
+            media_id = wechat.add_draft('AI 日报 | ' + '很长的标题' * 30, '<p>正文</p>', 'thumb-1',
+                                        digest='摘要' * 200, author='丁老师')
+        self.assertEqual(media_id, 'draft-1')
+        payload = json.loads(post.call_args.kwargs['data'].decode('utf-8'))
+        article = payload['articles'][0]
+        self.assertLessEqual(len(article['title'].encode('utf-8')), wechat.MAX_TITLE_BYTES)
+        self.assertEqual(len(article['digest']), wechat.MAX_DIGEST_CHARS)
+        self.assertEqual(article['thumb_media_id'], 'thumb-1')  # 封面必填
+        self.assertEqual(article['author'], '丁老师')
+
+    def test_cover_falls_back_to_local_file_and_caches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cover = Path(tmp) / 'cover.png'
+            cover.write_bytes(b'\x89PNG fake bytes')
+            cache = Path(tmp) / 'cover.json'
+            env = {'WECHAT_COVER': str(cover), 'WECHAT_COVER_CACHE': str(cache),
+                   'WECHAT_APPID': 'wx1', 'WECHAT_SECRET': 's1'}
+            uploaded = Mock()
+            uploaded.json.return_value = {'media_id': 'media-1'}
+            with patch.dict(os.environ, env, clear=False), \
+                    patch('news_digest.wechat.access_token', return_value='tok'), \
+                    patch('news_digest.wechat.requests.post', return_value=uploaded) as post:
+                self.assertEqual(wechat.cover_media_id([]), 'media-1')
+                self.assertEqual(wechat.cover_media_id([]), 'media-1')  # 同图不重复上传
+                self.assertEqual(post.call_count, 1)
+
+    def test_cover_raises_when_nothing_available(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {'WECHAT_COVER': '', 'WECHAT_COVER_CACHE': str(Path(tmp) / 'c.json')}
+            with patch.dict(os.environ, env, clear=False):
+                with self.assertRaises(RuntimeError) as ctx:
+                    wechat.cover_media_id([self.article])  # 无配图且未指定本地封面
+            self.assertIn('cover', str(ctx.exception))
+
+    def test_push_draft_composes_sections_and_digest(self):
+        extra = Article('量子位：某公司发布新模型', 'https://example.com/b', '中文摘要正文',
+                        self.now, '量子位', 0, '资讯')
+        with patch.dict(os.environ, {'WECHAT_SOURCE_URL': 'https://example.com/daily',
+                                     'WECHAT_AUTHOR': '丁老师'}, clear=False), \
+                patch('news_digest.wechat.cover_media_id', return_value='thumb-1'), \
+                patch('news_digest.wechat.add_draft', return_value='draft-9') as add:
+            media_id, title = wechat.push_draft([self.article], [extra], '2026年09月29日')
+        self.assertEqual(media_id, 'draft-9')
+        self.assertIn('2026年09月29日', title)
+        # add_draft(title, content, thumb_media_id, digest=..., source_url=..., author=...)
+        args, kwargs = add.call_args
+        content = args[1]
+        self.assertIn('今日要闻', content)
+        self.assertIn('专业资讯速递', content)
+        self.assertEqual(kwargs['source_url'], 'https://example.com/daily')
+        self.assertLessEqual(len(kwargs['digest']), wechat.MAX_DIGEST_CHARS)
 
 
 if __name__ == '__main__':
