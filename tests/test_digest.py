@@ -1,6 +1,7 @@
 import copy
 import json
 import os
+import requests
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -317,6 +318,28 @@ class DigestTests(unittest.TestCase):
         with patch.dict(os.environ, {'SERVERCHAN_SENDKEY': 'SCT123'}):
             with self.assertRaises(RuntimeError):
                 send('serverchan', 't', 'html', 'plain')
+
+    @patch('news_digest.delivery.time.sleep')
+    @patch('news_digest.delivery.requests.post')
+    def test_serverchan_retries_transient_connection_error(self, post, _sleep):
+        # Actions 实测：首次 TLS 连接偶发被重置（ConnectionError），同一运行内重试即可成功。
+        ok = Mock()
+        ok.json.return_value = {'code': 0, 'data': {'pushid': 'P2'}}
+        post.side_effect = [requests.exceptions.ConnectionError('reset'), ok]
+        with patch.dict(os.environ, {'SERVERCHAN_SENDKEY': 'SCT123'}):
+            receipt = send('serverchan', 't', 'html', 'plain')
+        self.assertEqual(receipt, 'serverchan_accepted:P2')
+        self.assertEqual(post.call_count, 2)
+
+    @patch('news_digest.delivery.time.sleep')
+    @patch('news_digest.delivery.requests.post')
+    def test_serverchan_does_not_retry_business_error(self, post, _sleep):
+        # 业务错误码（额度用尽 / 标题非法）不应重试，避免白白消耗每日免费额度。
+        post.return_value.json.return_value = {'code': 40001, 'message': 'bad key'}
+        with patch.dict(os.environ, {'SERVERCHAN_SENDKEY': 'SCT123'}):
+            with self.assertRaises(RuntimeError):
+                send('serverchan', 't', 'html', 'plain')
+        self.assertEqual(post.call_count, 1)
 
     def test_serverchan_url_switches_endpoint_by_key_type(self):
         self.assertEqual(serverchan_url('SCT123'), 'https://sctapi.ftqq.com/SCT123.send')

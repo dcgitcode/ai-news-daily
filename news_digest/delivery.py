@@ -3,11 +3,16 @@ import os
 import re
 import smtplib
 import ssl
+import time
 from email.message import EmailMessage
 
 import requests
 
 from .core import Article, canonical_url
+
+# 连接级失败：请求根本没到达服务端（DNS/TLS/连接被重置），重试不会重复投递。
+# 故意不含 ReadTimeout —— 那意味着请求已发出、只是没等到响应，重试可能造成重复推送。
+_RETRYABLE = (requests.exceptions.ConnectTimeout, requests.exceptions.ConnectionError)
 
 
 def required(key):
@@ -15,6 +20,25 @@ def required(key):
     if not value:
         raise ValueError(f'Missing setting: {key}')
     return value
+
+
+def _post(url, retries=3, backoff=(2, 5), **kwargs):
+    """POST 一次推送消息，仅对连接级失败做有限重试。
+
+    实测 GitHub Actions（美区机房）到国内推送服务的首次 TLS 连接偶发被重置，
+    表现为 ConnectionError，而同一次运行中的后续请求成功——属于瞬时故障。
+    这里重试 3 次（间隔 2s/5s）即可覆盖。4xx/5xx 与业务错误码一律原样返回，
+    由调用方判定，避免重复推送或白白消耗每日额度。
+    """
+    last = None
+    for attempt in range(retries):
+        try:
+            return requests.post(url, **kwargs)
+        except _RETRYABLE as exc:
+            last = exc
+            if attempt < retries - 1:
+                time.sleep(backoff[min(attempt, len(backoff) - 1)])
+    raise last
 
 
 def wecom_markdown(title, plain):
@@ -198,9 +222,9 @@ def _chunk_telegram(text, limit=4000):
 
 
 def _tg_send(token, chat_id, text, parse_mode):
-    response = requests.post(f'https://api.telegram.org/bot{token}/sendMessage',
-                             json={'chat_id': chat_id, 'text': text, 'parse_mode': parse_mode,
-                                   'disable_web_page_preview': False}, timeout=(10, 30))
+    response = _post(f'https://api.telegram.org/bot{token}/sendMessage',
+                     json={'chat_id': chat_id, 'text': text, 'parse_mode': parse_mode,
+                           'disable_web_page_preview': False}, timeout=(10, 30))
     response.raise_for_status()
     data = response.json()
     if not data.get('ok'):
@@ -209,9 +233,9 @@ def _tg_send(token, chat_id, text, parse_mode):
 
 
 def _tg_send_photo(token, chat_id, photo, caption):
-    response = requests.post(f'https://api.telegram.org/bot{token}/sendPhoto',
-                             json={'chat_id': chat_id, 'photo': photo, 'caption': caption,
-                                   'parse_mode': 'HTML'}, timeout=(10, 30))
+    response = _post(f'https://api.telegram.org/bot{token}/sendPhoto',
+                     json={'chat_id': chat_id, 'photo': photo, 'caption': caption,
+                           'parse_mode': 'HTML'}, timeout=(10, 30))
     response.raise_for_status()
     data = response.json()
     if not data.get('ok'):
@@ -277,7 +301,7 @@ def send(channel, title, page, plain, articles=None, footer=None):
             content, template = pushplus_html(title, articles), 'html'
         else:
             content, template = plain, 'txt'
-        response = requests.post('https://www.pushplus.plus/send', json={
+        response = _post('https://www.pushplus.plus/send', json={
             'token': token, 'title': title,
             'content': content, 'template': template, 'channel': 'wechat'}, timeout=(10, 30))
         response.raise_for_status()
@@ -292,7 +316,7 @@ def send(channel, title, page, plain, articles=None, footer=None):
         # 优先用图文卡片（含 RSS 配图，与自建应用同构）；无结构化文章时退回 markdown。
         if articles:
             for payload in wecom_app_cards(articles):
-                response = requests.post(webhook, json=payload, timeout=(10, 30))
+                response = _post(webhook, json=payload, timeout=(10, 30))
                 response.raise_for_status()
                 data = response.json()
                 if data.get('errcode') != 0:
@@ -300,7 +324,7 @@ def send(channel, title, page, plain, articles=None, footer=None):
                 receipts.append(str(data.get('msgid', 'ok')))
             return 'wecombot_accepted:' + ','.join(receipts)
         content = wecom_markdown(title, plain)
-        response = requests.post(webhook, json={
+        response = _post(webhook, json={
             'msgtype': 'markdown', 'markdown': {'content': content}}, timeout=(10, 30))
         response.raise_for_status()
         data = response.json()
@@ -319,8 +343,8 @@ def send(channel, title, page, plain, articles=None, footer=None):
         receipts = []
         for payload in wecom_app_cards(articles):
             payload.update({'touser': touser, 'agentid': agentid})
-            response = requests.post('https://qyapi.weixin.qq.com/cgi-bin/message/send',
-                                     params={'access_token': token}, json=payload, timeout=(10, 30))
+            response = _post('https://qyapi.weixin.qq.com/cgi-bin/message/send',
+                             params={'access_token': token}, json=payload, timeout=(10, 30))
             response.raise_for_status()
             data = response.json()
             if data.get('errcode') != 0:
@@ -351,8 +375,8 @@ def send(channel, title, page, plain, articles=None, footer=None):
         safe_title = title.replace('\n', ' ').strip()[:32]
         desp = (serverchan_markdown(safe_title, articles, footer or '完整图文版见邮件')
                 if articles else plain)
-        response = requests.post(serverchan_url(key), data={'title': safe_title, 'desp': desp},
-                                 timeout=(10, 30))
+        response = _post(serverchan_url(key), data={'title': safe_title, 'desp': desp},
+                         timeout=(10, 30))
         response.raise_for_status()
         data = response.json()
         # 成功返回 {"code":0,...}；非 0 表示被拒（额度用尽 / 标题非法 / SendKey 失效）。
