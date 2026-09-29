@@ -77,20 +77,43 @@
     "enabled": true,
     "arxiv": {
       "enabled": true,
+      "translate": true,
       "categories": ["cs.RO"],
       "keywords": ["embodied", "vision-language-action", "VLA", "robot learning", "humanoid",
                    "sim-to-real", "sim2real", "manipulation", "legged", "grasping",
                    "imitation learning", "world model", "diffusion policy"],
-      "max_results": 5
+      "max_results": 4
+    },
+    "chinese": {
+      "enabled": true,
+      "days": 3,
+      "max_results": 5,
+      "keywords": ["具身", "机器人", "人形", "机械臂", "抓取", "四足", "世界模型", "VLA",
+                   "强化学习", "模仿学习", "自动驾驶", "多模态", "智能体", "大模型",
+                   "人工智能", "AI", "神经网络", "算力"],
+      "feeds": [
+        {
+          "name": "量子位",
+          "url": "https://www.qbitai.com/feed",
+          "max_results": 3,
+          "enrich": true
+        },
+        {
+          "name": "Solidot 奇客",
+          "url": "https://www.solidot.org/index.rss",
+          "max_results": 3,
+          "title_only": true
+        }
+      ]
     },
     "github": {
-      "enabled": true,
+      "enabled": false,
       "days": 7,
       "min_stars": 100,
       "max_results": 5
     },
     "hackernews": {
-      "enabled": true,
+      "enabled": false,
       "max_results": 5
     }
   },

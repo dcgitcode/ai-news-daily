@@ -104,11 +104,12 @@ def main():
                 report['extras'] = {'status': 'ok', 'sources': extra_status,
                                     'count': len(extra_articles), 'deliveries': {}}
                 extra_title = '专业资讯速递 ' + now.astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d')
+                extra_note = '中文源为来源原文摘录；arXiv 论文标题与摘要由大模型改写为中文速读。'
                 for channel in channels:
                     items = pending(extra_articles, state, 'extras-' + channel, max(1, len(extra_articles)))
                     if not items:
                         continue
-                    extra_page, extra_plain = render(items, extra_title, 200)
+                    extra_page, extra_plain = render(items, extra_title, 200, note=extra_note)
                     try:
                         if channel in ('telegram', 'serverchan'):
                             receipt = send(channel, extra_title, extra_page, extra_plain,

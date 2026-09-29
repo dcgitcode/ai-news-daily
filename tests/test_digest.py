@@ -12,7 +12,8 @@ from news_digest.core import Article, canonical_url, clean, load_state, mark, ma
 from news_digest.delivery import (send, wecom_markdown, wecom_app_cards, pushplus_html,
                                   serverchan_markdown, serverchan_url, telegram_html)
 from news_digest.sources import collect, extract_image, fetch_feed
-from news_digest.extras import collect_extras, fetch_arxiv, fetch_github, fetch_hackernews
+from news_digest.extras import collect_extras, fetch_arxiv, fetch_chinese, fetch_github, fetch_hackernews, article_lead
+from news_digest import llm
 from news_digest.__main__ import main
 
 
@@ -389,11 +390,134 @@ class DigestTests(unittest.TestCase):
         response.content, response.raise_for_status.return_value = atom, None
         client.get.return_value = response
         papers = fetch_arxiv(client, {'categories': ['cs.RO'], 'keywords': ['embodied', 'robot learning'],
-                                      'max_results': 5}, datetime(2026, 9, 29, tzinfo=timezone.utc))
+                                      'max_results': 5, 'translate': False},
+                             datetime(2026, 9, 29, tzinfo=timezone.utc))
         self.assertEqual(len(papers), 1)  # 只保留命中关键词的一条
         self.assertEqual(papers[0].source, 'arXiv 论文')
         self.assertIn('embodied manipulation', papers[0].summary)
         self.assertNotIn('Announce Type', papers[0].summary)  # 前缀已剥掉
+
+    ARXIV_ATOM = (b'<rss version="2.0" xmlns:arxiv="http://arxiv.org/schemas/atom"><channel>'
+                  b'<item><title>Embodied Robot Learning in Simulation</title>'
+                  b'<link>https://arxiv.org/abs/2509.11111</link>'
+                  b'<description>arXiv:2509.11111v1 Announce Type: new\nAbstract: We study embodied manipulation.</description>'
+                  b'<arxiv:announce_type>new</arxiv:announce_type>'
+                  b'<pubDate>Mon, 28 Sep 2026 00:00:00 -0400</pubDate></item>'
+                  b'<item><title>Cooking Recipes for Fun</title>'
+                  b'<link>https://arxiv.org/abs/2509.22222</link>'
+                  b'<description>arXiv:2509.22222v1 Announce Type: new\nAbstract: unrelated cooking content.</description>'
+                  b'<arxiv:announce_type>new</arxiv:announce_type>'
+                  b'<pubDate>Mon, 28 Sep 2026 00:00:00 -0400</pubDate></item>'
+                  b'</channel></rss>')
+
+    def _arxiv_client(self, atom=None):
+        client, response = Mock(), Mock()
+        response.content = atom or self.ARXIV_ATOM
+        response.raise_for_status.return_value = None
+        client.get.return_value = response
+        return client
+
+    @patch('news_digest.extras.llm.digest_zh',
+           return_value=('仿真环境中学习具身操作', '解决仿真到现实的迁移问题。方法用 VLA 模型。'))
+    def test_fetch_arxiv_translates_to_chinese(self, _digest):
+        # 丁老师反馈「全是英文看不懂」：英文标题与摘要必须换成中文标题 + 中文速读。
+        papers = fetch_arxiv(self._arxiv_client(),
+                             {'categories': ['cs.RO'], 'keywords': ['embodied'],
+                              'max_results': 5, 'translate': True},
+                             datetime(2026, 9, 29, tzinfo=timezone.utc))
+        self.assertEqual(len(papers), 1)
+        self.assertEqual(papers[0].title, '仿真环境中学习具身操作')
+        self.assertIn('仿真到现实', papers[0].summary)
+        self.assertNotIn('embodied manipulation', papers[0].summary)  # 不再抛整段英文摘要
+
+    @patch('news_digest.extras.llm.digest_zh', return_value=('', ''))
+    def test_fetch_arxiv_drops_english_abstract_when_llm_unavailable(self, _digest):
+        # 中文速读不可用时，降级为「英文标题 + 链接」，不留整段英文摘要。
+        papers = fetch_arxiv(self._arxiv_client(),
+                             {'categories': ['cs.RO'], 'keywords': ['embodied'],
+                              'max_results': 5, 'translate': True},
+                             datetime(2026, 9, 29, tzinfo=timezone.utc))
+        self.assertEqual(papers[0].title, 'Embodied Robot Learning in Simulation')
+        self.assertEqual(papers[0].summary, '')
+
+    def test_article_lead_strips_boilerplate(self):
+        page = ('<div class="article">标题 梦晨 2026-09-29 08:49:30 来源： 量子位 '
+                '李飞飞将入职AMD 梦晨 发自 凹非寺 量子位 | 公众号 QbitAI '
+                '82亿美元，AMD全股票收购World Labs。后续正文内容。</div>'
+                '<div class="article_info">meta</div>')
+        lead = article_lead(page, '标题')
+        self.assertTrue(lead.startswith('82亿美元'))
+        self.assertNotIn('公众号', lead)
+        self.assertEqual(article_lead('<html>没有正文容器</html>', '标题'), '')
+
+    def test_fetch_chinese_filters_and_respects_title_only(self):
+        def build(items):
+            body = b''.join(
+                f'<item><title>{t}</title><link>{u}</link><description>{d}</description>'
+                f'<pubDate>Mon, 28 Sep 2026 00:00:00 +0000</pubDate></item>'.encode()
+                for t, u, d in items)
+            return b'<rss version="2.0"><channel>' + body + b'</channel></rss>'
+
+        qbit = build([('人形机器人新进展', 'https://www.qbitai.com/2026/09/a.html', '一句话导语'),
+                      ('办公室装修指南', 'https://www.qbitai.com/2026/09/b.html', '与智能无关')])
+        solidot = build([('小偷想偷英伟达芯片结果偷了20吨沙子',
+                          'https://www.solidot.org/story?sid=1', '正文里提到了自动驾驶'),
+                         ('AI 生成内容的版权之争', 'https://www.solidot.org/story?sid=2', '摘要')])
+        client = Mock()
+
+        def respond(url, **kwargs):
+            response = Mock()
+            response.raise_for_status.return_value = None
+            response.content = qbit if 'qbitai' in url else solidot
+            return response
+
+        client.get.side_effect = respond
+        items = fetch_chinese(client, {
+            'days': 30, 'max_results': 5, 'keywords': ['机器人', 'AI'],
+            'feeds': [{'name': '量子位', 'url': 'https://www.qbitai.com/feed', 'max_results': 3},
+                      {'name': 'Solidot 奇客', 'url': 'https://www.solidot.org/index.rss',
+                       'max_results': 3, 'title_only': True}]},
+            datetime(2026, 9, 29, tzinfo=timezone.utc))
+        titles = [a.title for a in items]
+        self.assertIn('人形机器人新进展', titles)
+        self.assertIn('AI 生成内容的版权之争', titles)
+        self.assertNotIn('办公室装修指南', titles)  # 关键词不命中
+        self.assertNotIn('小偷想偷英伟达芯片结果偷了20吨沙子', titles)  # 关键词只在摘要里
+
+    @patch('news_digest.llm.requests.post')
+    def test_llm_digest_zh_strips_labels_and_parses(self, post):
+        post.return_value.status_code = 200
+        post.return_value.json.return_value = {'choices': [{'message': {'content':
+            '中文标题：具身操作新方法\n速读：解决跨场景迁移问题。用 VLA 模型统一表征。'}}]}
+        with patch.dict(os.environ, {'LLM_API_KEY': 'sk-test'}):
+            title, body = llm.digest_zh('English Title', 'abstract')
+        self.assertEqual(title, '具身操作新方法')  # 「中文标题：」前缀已剥掉
+        self.assertIn('跨场景迁移', body)
+        self.assertTrue(post.call_args.kwargs['headers']['Authorization'].startswith('Bearer '))
+        self.assertNotIn('sk-test', post.call_args.args[0])  # 密钥不进 URL
+
+    def test_llm_disabled_without_key(self):
+        with patch.dict(os.environ, {'LLM_API_KEY': ''}):
+            self.assertFalse(llm.enabled())
+            self.assertEqual(llm.digest_zh('t', 'a'), ('', ''))
+
+    @patch('news_digest.llm.requests.post')
+    def test_llm_empty_env_falls_back_to_defaults(self, post):
+        # Actions 里未配置的 secret 会展开成空字符串：必须回落到默认地址与模型，
+        # 否则会拼出 '/chat/completions' 这种残缺 URL 而静默失败。
+        post.return_value.status_code = 200
+        post.return_value.json.return_value = {'choices': [{'message': {'content': '标题\n速读'}}]}
+        with patch.dict(os.environ, {'LLM_API_KEY': 'sk-test', 'LLM_BASE_URL': '', 'LLM_MODEL': ''}):
+            llm.digest_zh('t', 'a')
+        self.assertEqual(post.call_args.args[0], 'https://api.siliconflow.cn/v1/chat/completions')
+        self.assertEqual(post.call_args.kwargs['json']['model'], 'THUDM/GLM-4-9B-0414')
+
+    def test_render_note_overrides_default(self):
+        page, plain = render([self.article(title='标题', summary='摘要')], '每日速递', 100,
+                             note='arXiv 条目由大模型改写为中文速读。')
+        self.assertIn('大模型改写', plain)
+        self.assertIn('大模型改写', page)
+        self.assertNotIn('未调用大模型', page)  # extras 不得谎称未用大模型
 
     def test_fetch_github_shapes_and_truncates(self):
         client, response = Mock(), Mock()

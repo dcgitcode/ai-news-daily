@@ -165,9 +165,11 @@ def mark(state, channel, articles, now):
                                    if (now - parse_date(v)).days < 90}
 
 
-def render(articles, title, summary_chars=280):
+def render(articles, title, summary_chars=280, note=None):
+    # 主日报是纯规则筛选；「专业资讯速递」的 arXiv 条目经大模型改写，故允许调用方覆盖说明文案。
+    note = note or '规则筛选；摘要为来源原文摘录，未调用大模型。'
     esc = html.escape
-    blocks, lines = [], [title, '规则筛选；摘要为来源原文摘录，未调用大模型。', '']
+    blocks, lines = [], [title, note, '']
     for index, article in enumerate(articles, 1):
         summary = article.summary[:summary_chars]
         meta = f'{article.kind} · {article.source} · {article.published:%Y-%m-%d %H:%M UTC} · 分数 {article.score:g}'
@@ -189,5 +191,5 @@ def render(articles, title, summary_chars=280):
              'article{background:white;padding:18px;margin:16px 0;border-radius:12px}'
              'article img{display:block;width:100%;max-height:320px;object-fit:cover;border-radius:8px;margin:0 0 12px}'
              'h2{font-size:20px}a{color:#175ca6}.meta{color:#657487;font-size:13px}}</style><body>')
-    page += f'<h1>{esc(title)}</h1><p>规则筛选 · 来源原文摘录 · 不使用大模型 API</p>' + ''.join(blocks) + '</body></html>'
+    page += f'<h1>{esc(title)}</h1><p>{esc(note)}</p>' + ''.join(blocks) + '</body></html>'
     return page, '\n'.join(lines)
