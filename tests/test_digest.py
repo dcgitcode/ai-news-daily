@@ -121,12 +121,14 @@ class DigestTests(unittest.TestCase):
             with patch.dict(os.environ, env), patch('sys.argv', ['digest']), \
                  patch('news_digest.__main__.validate_channels'), \
                  patch('news_digest.__main__.collect', return_value=([self.article()], [{'ok': True}])), \
+                 patch('news_digest.__main__.collect_extras', return_value=([], [])), \
                  patch('news_digest.__main__.send', side_effect=['smtp_accepted', RuntimeError('failed')]) as delivery:
                 self.assertEqual(main(), 1)
                 self.assertEqual(delivery.call_count, 2)
             with patch.dict(os.environ, env), patch('sys.argv', ['digest']), \
                  patch('news_digest.__main__.validate_channels'), \
                  patch('news_digest.__main__.collect', return_value=([self.article()], [{'ok': True}])), \
+                 patch('news_digest.__main__.collect_extras', return_value=([], [])), \
                  patch('news_digest.__main__.send', return_value='queued') as delivery:
                 self.assertEqual(main(), 0)
                 self.assertEqual(delivery.call_args.args[0], 'pushplus')
@@ -138,6 +140,22 @@ class DigestTests(unittest.TestCase):
                 delivery.assert_not_called()
             self.assertEqual(Path(state_path).read_bytes(), before)
 
+
+    def test_extras_delivered_to_configured_channels(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env = {'CHANNELS': 'email', 'STATE_PATH': str(Path(directory) / 's.json'),
+                   'REPORT_DIR': directory, 'SMTP_USER': 'u', 'SMTP_PASSWORD': 'p',
+                   'EMAIL_TO': 'to@example.com'}
+            with patch.dict(os.environ, env), patch('sys.argv', ['digest']), \
+                 patch('news_digest.__main__.validate_channels'), \
+                 patch('news_digest.__main__.collect', return_value=([self.article()], [{'ok': True}])), \
+                 patch('news_digest.__main__.collect_extras',
+                       return_value=([self.article(title='论文标题')], [{'source': 'arXiv', 'ok': True}])), \
+                 patch('news_digest.__main__.send', return_value='accepted') as delivery:
+                self.assertEqual(main(), 0)
+            # 主日报 1 次 + 专业资讯速递 1 次
+            self.assertEqual(delivery.call_count, 2)
+            self.assertTrue(any('专业资讯速递' in str(call.args[1]) for call in delivery.call_args_list))
 
     def test_unconfigured_channel_is_skipped(self):
         with tempfile.TemporaryDirectory() as directory:
