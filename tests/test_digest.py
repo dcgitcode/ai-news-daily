@@ -10,6 +10,7 @@ from unittest.mock import patch, Mock
 from news_digest.core import Article, canonical_url, clean, load_state, mark, matches, pending, rank, render, save_state
 from news_digest.delivery import send, wecom_markdown, wecom_app_cards, pushplus_html, telegram_html
 from news_digest.sources import collect, extract_image, fetch_feed
+from news_digest.extras import collect_extras, fetch_arxiv, fetch_github, fetch_hackernews
 from news_digest.__main__ import main
 
 
@@ -266,6 +267,78 @@ class DigestTests(unittest.TestCase):
         urls = [c.args[0] for c in post.call_args_list]
         self.assertEqual(sum('sendMessage' in u for u in urls), 1)
         self.assertEqual(sum('sendPhoto' in u for u in urls), 1)
+
+    def test_fetch_arxiv_filters_by_keyword_and_strips_prefix(self):
+        atom = (b'<?xml version="1.0" encoding="UTF-8"?>'
+                b'<rss version="2.0" xmlns:arxiv="http://arxiv.org/schemas/atom"><channel>'
+                b'<item><title>Embodied Robot Learning in Simulation</title>'
+                b'<link>https://arxiv.org/abs/2509.11111</link>'
+                b'<description>arXiv:2509.11111v1 Announce Type: new\nAbstract: We study embodied manipulation.</description>'
+                b'<arxiv:announce_type>new</arxiv:announce_type>'
+                b'<pubDate>Mon, 28 Sep 2026 00:00:00 -0400</pubDate></item>'
+                b'<item><title>Cooking Recipes for Fun</title>'
+                b'<link>https://arxiv.org/abs/2509.22222</link>'
+                b'<description>arXiv:2509.22222v1 Announce Type: new\nAbstract: unrelated cooking content.</description>'
+                b'<arxiv:announce_type>new</arxiv:announce_type>'
+                b'<pubDate>Mon, 28 Sep 2026 00:00:00 -0400</pubDate></item>'
+                b'</channel></rss>')
+        client, response = Mock(), Mock()
+        response.content, response.raise_for_status.return_value = atom, None
+        client.get.return_value = response
+        papers = fetch_arxiv(client, {'categories': ['cs.RO'], 'keywords': ['embodied', 'robot learning'],
+                                      'max_results': 5}, datetime(2026, 9, 29, tzinfo=timezone.utc))
+        self.assertEqual(len(papers), 1)  # 只保留命中关键词的一条
+        self.assertEqual(papers[0].source, 'arXiv 论文')
+        self.assertIn('embodied manipulation', papers[0].summary)
+        self.assertNotIn('Announce Type', papers[0].summary)  # 前缀已剥掉
+
+    def test_fetch_github_shapes_and_truncates(self):
+        client, response = Mock(), Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {'items': [{
+            'full_name': 'a/b', 'html_url': 'https://github.com/a/b', 'description': 'desc',
+            'topics': ['ai', 'llm'], 'created_at': '2026-09-25T00:00:00Z', 'stargazers_count': 321}]}
+        client.get.return_value = response
+        repos = fetch_github(client, {'days': 7, 'min_stars': 100, 'max_results': 5},
+                             datetime(2026, 9, 29, tzinfo=timezone.utc))
+        self.assertEqual(len(repos), 1)
+        self.assertEqual(repos[0].title, 'a/b')
+        self.assertEqual(repos[0].source, 'GitHub 趋势项目')
+        self.assertIn('ai', repos[0].summary)
+
+    def test_fetch_hackernews_builds_articles(self):
+        client = Mock()
+
+        def respond(url, **kwargs):
+            response = Mock()
+            response.raise_for_status.return_value = None
+            if 'topstories' in url:
+                response.json.return_value = [1, 2, 3]
+            else:
+                story_id = url.rsplit('/', 1)[1].split('.')[0]
+                response.json.return_value = {'title': f'Story {story_id}',
+                                              'url': f'https://news.example.com/{story_id}',
+                                              'time': 1758000000}
+            return response
+
+        client.get.side_effect = respond
+        stories = fetch_hackernews(client, {'max_results': 2}, datetime(2026, 9, 29, tzinfo=timezone.utc))
+        self.assertEqual(len(stories), 2)  # 只取前 2 条
+        self.assertEqual(stories[0].source, 'Hacker News')
+        self.assertEqual(stories[0].title, 'Story 1')
+
+    @patch('news_digest.extras.session')
+    def test_collect_extras_survives_partial_failure(self, _session):
+        with patch('news_digest.extras.fetch_arxiv', side_effect=RuntimeError('429 throttled')), \
+             patch('news_digest.extras.fetch_github', return_value=[self.article()]), \
+             patch('news_digest.extras.fetch_hackernews', return_value=[]):
+            articles, status = collect_extras(
+                {'extras': {'arxiv': {'enabled': True}, 'github': {'enabled': True},
+                            'hackernews': {'enabled': True}}},
+                datetime(2026, 9, 29, tzinfo=timezone.utc))
+        self.assertEqual(len(articles), 1)  # 单源失败不影响其余来源
+        self.assertTrue(any(s['ok'] is False for s in status))
+        self.assertTrue(any(s['ok'] is True for s in status))
 
     def test_extract_image_prefers_media_and_validates(self):
         media_entry = {'media_content': [{'url': 'https://cdn.example.com/pic'}],

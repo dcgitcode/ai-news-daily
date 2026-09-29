@@ -73,5 +73,26 @@
     "max_results": 30,
     "weight": 2
   },
+  "extras": {
+    "enabled": true,
+    "arxiv": {
+      "enabled": true,
+      "categories": ["cs.RO"],
+      "keywords": ["embodied", "vision-language-action", "VLA", "robot learning", "humanoid",
+                   "sim-to-real", "sim2real", "manipulation", "legged", "grasping",
+                   "imitation learning", "world model", "diffusion policy"],
+      "max_results": 5
+    },
+    "github": {
+      "enabled": true,
+      "days": 7,
+      "min_stars": 100,
+      "max_results": 5
+    },
+    "hackernews": {
+      "enabled": true,
+      "max_results": 5
+    }
+  },
   "chinese_only": true
 }

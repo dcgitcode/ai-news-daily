@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 from .core import Article, load_state, mark, pending, rank, render, save_state
 from .delivery import send, validate_channels
+from .extras import collect_extras
 from .sources import collect
 
 
@@ -91,6 +92,27 @@ def main():
             save_state(state_path, state)
             report['deliveries'][channel] = {'status': 'accepted', 'count': len(items), 'receipt': receipt}
             print(f'ACCEPTED {channel}: {len(items)} items')
+        # 每日「专业资讯速递」：独立一条 Telegram 消息，与主日报分开；失败不影响主日报结果。
+        if 'telegram' in channels and config.get('extras', {}).get('enabled'):
+            report['extras'] = {'status': 'skipped'}
+            try:
+                extra_articles, extra_status = collect_extras(config, now)
+                report['extras'] = {'status': 'ok', 'sources': extra_status, 'count': len(extra_articles)}
+                extra_items = pending(extra_articles, state, 'extras', max(1, len(extra_articles)))
+                if extra_items:
+                    extra_title = '专业资讯速递 ' + now.astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m-%d')
+                    extra_page, extra_plain = render(extra_items, extra_title, 200)
+                    receipt = send('telegram', extra_title, extra_page, extra_plain,
+                                   articles=extra_items, footer='点击标题查看原文')
+                    mark(state, 'extras', extra_items, now)
+                    save_state(state_path, state)
+                    report['extras']['receipt'] = receipt
+                    print(f'ACCEPTED extras: {len(extra_items)} items')
+                else:
+                    print('SKIP extras: no new items')
+            except Exception as exc:
+                report['extras'] = {'status': 'failed', 'error': type(exc).__name__}
+                print(f'ERROR extras: {type(exc).__name__}')
     (report_dir / 'status.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     print(f'Report: {report_dir / "latest.html"}; ranked candidates: {len(ranked)}; dry-run: {dry}')
     return 1 if failed else 0

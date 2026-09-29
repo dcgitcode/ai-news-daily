@@ -130,7 +130,7 @@ def pushplus_html(title, articles):
     return ''.join(blocks)
 
 
-def telegram_html(title, articles):
+def telegram_html(title, articles, footer='完整图文版见邮件'):
     """把图文日报渲染成 Telegram HTML 消息（标题链接 + 来源 + 摘要）。
 
     用 Telegram 支持的有限 HTML 标签（<b>/<a>/<i>），转义防注入。
@@ -146,7 +146,8 @@ def telegram_html(title, articles):
             block.append(esc(article.summary)[:600])
         parts.append('\n'.join(block))
     parts.append('')
-    parts.append('<i>完整图文版见邮件</i>')
+    if footer:
+        parts.append(f'<i>{esc(footer)}</i>')
     return '\n'.join(parts)
 
 
@@ -213,7 +214,7 @@ def validate_channels(channels):
             raise ValueError('Unsupported channel: ' + channel)
 
 
-def send(channel, title, page, plain, articles=None):
+def send(channel, title, page, plain, articles=None, footer=None):
     if channel == 'email':
         message = EmailMessage()
         message['Subject'] = title
@@ -299,7 +300,9 @@ def send(channel, title, page, plain, articles=None):
         chat_id = required('TELEGRAM_CHAT_ID')
         arts = articles or []
         receipts = []
-        text = telegram_html(title, arts) if arts else html.escape(plain)
+        # footer 为 None 时沿用默认（主日报）；显式传空串可去掉页脚（extras 传自定义文案）。
+        text = (telegram_html(title, arts, footer or '完整图文版见邮件')
+                if arts else html.escape(plain))
         for chunk in _chunk_telegram(text):
             receipts.append(_tg_send(token, chat_id, chunk, 'HTML'))
         # 配图单独以 sendPhoto 发送（最多 8 张），单张失败不影响整体推送。
