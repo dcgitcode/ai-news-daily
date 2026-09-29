@@ -157,23 +157,40 @@ def pushplus_html(title, articles):
 def serverchan_markdown(title, articles, footer='完整图文版见邮件'):
     """把图文日报渲染成 Server酱 的 Markdown 正文（推送到个人微信）。
 
-    Server酱 desp 只支持 Markdown（不支持 HTML），图片必须用 Markdown 语法引用
-    公网 https URL；被防盗链时不显示图片，文字照常送达（降级而非失败）。
-    标题另有限制（≤32 字符、不含换行），由 send() 统一收口。
+    Server酱 desp 只支持 Markdown、整体上限 32KB。RSS 原文摘要可达数千字，
+    不截断必然超限被拒（实测 12 条原始摘要拼出 126KB）——因此按微信阅读习惯
+    逐级收紧摘要（200→120→60→0），仍超限则从尾部丢弃条目，保证能发出去。
+    图片必须用 Markdown 语法引用公网 https URL；被防盗链时不显示图片，
+    文字照常送达（降级而非失败）。标题另有限制（≤32 字符、不含换行），由 send() 收口。
     """
-    blocks = [f'## {title}']
-    for index, article in enumerate(articles, 1):
-        url = canonical_url(article.url)
-        block = [f'**{index}. [{article.title}]({url})**',
-                 f'{article.source} · {article.published:%Y-%m-%d}']
-        if article.summary:
-            block.append(article.summary)
-        if article.image and article.image.startswith('https://'):
-            block.append(f'![]({article.image})')
-        blocks.append('\n\n'.join(block))
-    if footer:
-        blocks.append(f'> {footer}')
-    return '\n\n'.join(blocks)
+    LIMIT = 30000  # 官方上限 32KB，留出标题与页脚余量。
+
+    def compose(entries, summary_chars):
+        blocks = [f'## {title}']
+        for index, article in enumerate(entries, 1):
+            url = canonical_url(article.url)
+            block = [f'**{index}. [{article.title}]({url})**',
+                     f'{article.source} · {article.published:%Y-%m-%d}']
+            if summary_chars and article.summary:
+                block.append(article.summary[:summary_chars])
+            if article.image and article.image.startswith('https://'):
+                block.append(f'![]({article.image})')
+            blocks.append('\n\n'.join(block))
+        if footer:
+            blocks.append(f'> {footer}')
+        return '\n\n'.join(blocks)
+
+    entries = list(articles)
+    for limit in (200, 120, 60, 0):
+        content = compose(entries, limit)
+        if len(content.encode('utf-8')) <= LIMIT:
+            return content
+    while len(entries) > 1:
+        entries.pop()
+        content = compose(entries, 0)
+        if len(content.encode('utf-8')) <= LIMIT:
+            return content
+    return compose(entries, 0)
 
 
 def serverchan_url(key):
@@ -377,7 +394,9 @@ def send(channel, title, page, plain, articles=None, footer=None):
                 if articles else plain)
         response = _post(serverchan_url(key), data={'title': safe_title, 'desp': desp},
                          timeout=(10, 30))
-        response.raise_for_status()
+        # 不用 raise_for_status()：其异常信息含带 SendKey 的 URL，会泄漏到日志。
+        if response.status_code != 200:
+            raise RuntimeError(f'ServerChan HTTP {response.status_code}')
         data = response.json()
         # 成功返回 {"code":0,...}；非 0 表示被拒（额度用尽 / 标题非法 / SendKey 失效）。
         if data.get('code') != 0:

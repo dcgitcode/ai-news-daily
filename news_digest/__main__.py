@@ -87,7 +87,10 @@ def main():
             except Exception as exc:
                 failed = True
                 report['deliveries'][channel] = {'status': 'failed', 'error': type(exc).__name__}
-                print(f'ERROR delivery {channel}: {type(exc).__name__} (details hidden to protect secrets)')
+                # RuntimeError 的信息由本项目自行构造（只有状态码/错误码，不含凭证）；
+                # HTTPError / ConnectionError 的信息带着含 token 的 URL，一律只打印类型。
+                detail = str(exc) if isinstance(exc, RuntimeError) else '(details hidden to protect secrets)'
+                print(f'ERROR delivery {channel}: {type(exc).__name__} {detail}')
                 continue
             mark(state, channel, items, now)
             save_state(state_path, state)
@@ -106,11 +109,21 @@ def main():
                     if not items:
                         continue
                     extra_page, extra_plain = render(items, extra_title, 200)
-                    if channel in ('telegram', 'serverchan'):
-                        receipt = send(channel, extra_title, extra_page, extra_plain,
-                                       articles=items, footer='点击标题查看原文')
-                    else:
-                        receipt = send(channel, extra_title, extra_page, extra_plain)
+                    try:
+                        if channel in ('telegram', 'serverchan'):
+                            receipt = send(channel, extra_title, extra_page, extra_plain,
+                                           articles=items, footer='点击标题查看原文')
+                        else:
+                            receipt = send(channel, extra_title, extra_page, extra_plain)
+                    except Exception as exc:
+                        # 与主日报一致：单个渠道失败不拖垮其余渠道，也不影响主日报。
+                        failed = True
+                        report['extras']['deliveries'][channel] = {
+                            'status': 'failed', 'error': type(exc).__name__}
+                        detail = (str(exc) if isinstance(exc, RuntimeError)
+                                  else '(details hidden to protect secrets)')
+                        print(f'ERROR delivery extras {channel}: {type(exc).__name__} {detail}')
+                        continue
                     mark(state, 'extras-' + channel, items, now)
                     save_state(state_path, state)
                     report['extras']['deliveries'][channel] = {

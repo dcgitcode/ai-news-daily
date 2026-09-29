@@ -301,6 +301,7 @@ class DigestTests(unittest.TestCase):
 
     @patch('news_digest.delivery.requests.post')
     def test_serverchan_send_posts_markdown_and_caps_title(self, post):
+        post.return_value.status_code = 200
         post.return_value.json.return_value = {'code': 0, 'data': {'pushid': 'P1'}}
         with patch.dict(os.environ, {'SERVERCHAN_SENDKEY': 'SCT123'}):
             articles = [self.article(title='标题', summary='摘要', image='https://cdn.example.com/p.jpg')]
@@ -314,16 +315,39 @@ class DigestTests(unittest.TestCase):
 
     @patch('news_digest.delivery.requests.post')
     def test_serverchan_rejects_nonzero_code(self, post):
+        post.return_value.status_code = 200
         post.return_value.json.return_value = {'code': 40001, 'message': 'bad key'}
         with patch.dict(os.environ, {'SERVERCHAN_SENDKEY': 'SCT123'}):
             with self.assertRaises(RuntimeError):
                 send('serverchan', 't', 'html', 'plain')
+
+    def test_serverchan_markdown_caps_total_size(self):
+        # RSS 原文摘要可达数千字：实测 12 条原始摘要拼出 126KB，远超 Server酱 32KB 上限被拒。
+        # 渲染必须逐级收紧摘要并按字节兜底，保证能发出去且仍保留条目。
+        articles = [self.article(title=f'长摘要第{i}条', summary='很长的中文摘要内容' * 400,
+                                 image='https://cdn.example.com/p.jpg') for i in range(1, 13)]
+        content = serverchan_markdown('AI 每日新闻 测试', articles)
+        self.assertLessEqual(len(content.encode('utf-8')), 30000)
+        self.assertIn('**1. [长摘要第1条', content)
+        self.assertIn('![](https://cdn.example.com/p.jpg)', content)
+        self.assertLessEqual(len(content), 30000)
+
+    @patch('news_digest.delivery.requests.post')
+    def test_serverchan_reports_http_status_without_leaking_key(self, post):
+        # 非 200 时抛 RuntimeError 并带上状态码便于诊断；不得把含 SendKey 的 URL 写进异常信息。
+        post.return_value.status_code = 413
+        with patch.dict(os.environ, {'SERVERCHAN_SENDKEY': 'SCT123'}):
+            with self.assertRaises(RuntimeError) as ctx:
+                send('serverchan', 't', 'html', 'plain')
+        self.assertIn('413', str(ctx.exception))
+        self.assertNotIn('SCT123', str(ctx.exception))
 
     @patch('news_digest.delivery.time.sleep')
     @patch('news_digest.delivery.requests.post')
     def test_serverchan_retries_transient_connection_error(self, post, _sleep):
         # Actions 实测：首次 TLS 连接偶发被重置（ConnectionError），同一运行内重试即可成功。
         ok = Mock()
+        ok.status_code = 200
         ok.json.return_value = {'code': 0, 'data': {'pushid': 'P2'}}
         post.side_effect = [requests.exceptions.ConnectionError('reset'), ok]
         with patch.dict(os.environ, {'SERVERCHAN_SENDKEY': 'SCT123'}):
@@ -335,6 +359,7 @@ class DigestTests(unittest.TestCase):
     @patch('news_digest.delivery.requests.post')
     def test_serverchan_does_not_retry_business_error(self, post, _sleep):
         # 业务错误码（额度用尽 / 标题非法）不应重试，避免白白消耗每日免费额度。
+        post.return_value.status_code = 200
         post.return_value.json.return_value = {'code': 40001, 'message': 'bad key'}
         with patch.dict(os.environ, {'SERVERCHAN_SENDKEY': 'SCT123'}):
             with self.assertRaises(RuntimeError):
