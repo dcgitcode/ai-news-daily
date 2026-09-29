@@ -32,6 +32,27 @@ LABEL = re.compile(r'^\s*(?:中文标题|标题|速读|摘要|要点)\s*[:：]\s
 HEADING = re.compile(r'^\s*(?:[#*>\-]+\s*|\d+\s*[\.、）)]\s*)+')
 
 
+# 本轮运行的中文速读统计。原本「翻译失败」只在日志里留一行 WARNING，
+# 无法从 status.json 判断线上到底有没有跑通（chat 有多条静默返回空串的路径），
+# 于是把结果计数出来，随 extras 状态一起落到 status.json。
+STATS = {'ok': 0, 'fail': 0, 'reason': ''}
+
+
+def reset_stats():
+    STATS.update(ok=0, fail=0, reason='')
+
+
+def stats():
+    return dict(STATS)
+
+
+def _fail(reason):
+    STATS['fail'] += 1
+    if not STATS['reason']:
+        STATS['reason'] = reason
+    return ''
+
+
 def enabled():
     return bool(os.getenv('LLM_API_KEY', '').strip())
 
@@ -40,7 +61,7 @@ def chat(messages, model=None, temperature=0.3, max_tokens=600, timeout=(10, 60)
     """调用 OpenAI 兼容的 chat/completions，失败返回空串。"""
     key = os.getenv('LLM_API_KEY', '').strip()
     if not key:
-        return ''
+        return _fail('no_api_key')
     # 注意：Actions 里未配置的 secret 会展开成空字符串，所以必须「取到空就当没配」，
     # 不能用 os.getenv('LLM_BASE_URL', 默认值)——那样会拿到 '' 拼出残缺 URL。
     base = os.getenv('LLM_BASE_URL', '').strip() or DEFAULT_BASE_URL
@@ -53,17 +74,23 @@ def chat(messages, model=None, temperature=0.3, max_tokens=600, timeout=(10, 60)
                                           'Content-Type': 'application/json'})
     except Exception as exc:
         print(f'WARNING llm: {type(exc).__name__}')
-        return ''
+        return _fail(type(exc).__name__)
     if response.status_code != 200:
         # 状态码安全（密钥在请求头里，不在 URL 上）；响应体可能含敏感信息，不打。
         print(f'WARNING llm: HTTP {response.status_code}')
-        return ''
+        return _fail(f'http_{response.status_code}')
     try:
         content = response.json()['choices'][0]['message']['content'] or ''
     except (KeyError, IndexError, TypeError, ValueError):
         print('WARNING llm: unexpected response shape')
-        return ''
-    return content.strip()
+        return _fail('bad_shape')
+    # 200 但内容为空/纯空白：也算失败并记账。否则 digest_zh 会以为「chat 已记过账」
+    # 而直接返回，导致成功失败都不计数——线上就分不清到底是没跑还是跑空了。
+    text = content.strip()
+    if not text:
+        print('WARNING llm: empty content')
+        return _fail('empty_output')
+    return text
 
 
 def digest_zh(title, abstract):
@@ -71,9 +98,13 @@ def digest_zh(title, abstract):
     text = chat([{'role': 'user',
                   'content': DIGEST_PROMPT.format(title=title, abstract=abstract[:1600])}])
     if not text:
+        # chat 已 _fail（无 key / 网络异常 / HTTP 非 200 / 响应格式异常 / 内容为空）。
         return '', ''
     lines = [LABEL.sub('', line).strip() for line in text.splitlines()]
     lines = [HEADING.sub('', line) for line in lines if line.strip()]
     if not lines:
+        # text 非空但全是引导词/编号等噪声，被剥光了：仍算失败，不能计入成功。
+        _fail('empty_output')
         return '', ''
+    STATS['ok'] += 1
     return lines[0][:40], ' '.join(lines[1:])[:180]

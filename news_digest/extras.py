@@ -235,6 +235,7 @@ def collect_extras(config, now):
     articles, status = [], []
     if cfg.get('arxiv', {}).get('enabled') and not llm.enabled():
         print('WARNING extras arXiv: 未配置 LLM_API_KEY，论文只发英文标题（无中文速读）')
+    llm.reset_stats()
     fetchers = [('arXiv', fetch_arxiv, cfg.get('arxiv', {})),
                 ('中文源', fetch_chinese, cfg.get('chinese', {})),
                 ('GitHub', fetch_github, cfg.get('github', {})),
@@ -254,4 +255,12 @@ def collect_extras(config, now):
                 status.append({'source': name, 'ok': False, 'error': type(exc).__name__,
                                'http_status': code})
                 print(f'WARNING extras {name}: {type(exc).__name__}, HTTP {code}')
+    # 中文速读结果单独记一条：线上只看 status.json 也能判断大模型有没有真正跑通。
+    if cfg.get('arxiv', {}).get('enabled') and cfg.get('arxiv', {}).get('translate', True):
+        zh = llm.stats()
+        status.append({'source': '中文速读', 'ok': zh['ok'] > 0,
+                       'count': zh['ok'], 'failed': zh['fail'],
+                       'reason': zh['reason'] or None})
+        print(f'LLM 中文速读: 成功 {zh["ok"]} 篇, 失败 {zh["fail"]} 篇'
+              + (f', 原因 {zh["reason"]}' if zh['reason'] else ''))
     return articles, status

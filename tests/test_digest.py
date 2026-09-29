@@ -519,6 +519,99 @@ class DigestTests(unittest.TestCase):
         self.assertIn('大模型改写', page)
         self.assertNotIn('未调用大模型', page)  # extras 不得谎称未用大模型
 
+    def test_llm_stats_distinguish_success_from_silent_failure(self):
+        # 线上只靠「日志里没有 WARNING」判断不了中文速读有没有生效：
+        # chat 有静默返回空串的路径（无 key），失败还可能发生在响应解析阶段。
+        # 统计必须把成功与各种失败分开计数，并留下首个失败原因。
+        llm.reset_stats()
+        with patch.dict(os.environ, {'LLM_API_KEY': ''}):
+            llm.digest_zh('t', 'a')
+        self.assertEqual(llm.stats(), {'ok': 0, 'fail': 1, 'reason': 'no_api_key'})
+
+        llm.reset_stats()
+        with patch('news_digest.llm.requests.post') as post:
+            post.return_value.status_code = 401
+            with patch.dict(os.environ, {'LLM_API_KEY': 'sk-test'}):
+                llm.digest_zh('t', 'a')
+        self.assertEqual(llm.stats(), {'ok': 0, 'fail': 1, 'reason': 'http_401'})
+
+        llm.reset_stats()
+        with patch('news_digest.llm.requests.post') as post:
+            post.return_value.status_code = 200
+            post.return_value.json.return_value = {'choices': [{'message': {'content': '中文标题\n速读正文'}}]}
+            with patch.dict(os.environ, {'LLM_API_KEY': 'sk-test'}):
+                llm.digest_zh('t', 'a')
+        self.assertEqual(llm.stats(), {'ok': 1, 'fail': 0, 'reason': ''})
+
+    def test_llm_stats_records_model_returning_empty_body(self):
+        # 模型返回 200 但内容为空：算失败，且原因可辨，不能计入成功。
+        llm.reset_stats()
+        with patch('news_digest.llm.requests.post') as post:
+            post.return_value.status_code = 200
+            post.return_value.json.return_value = {'choices': [{'message': {'content': '   '}}]}
+            with patch.dict(os.environ, {'LLM_API_KEY': 'sk-test'}):
+                self.assertEqual(llm.digest_zh('t', 'a'), ('', ''))
+        self.assertEqual(llm.stats(), {'ok': 0, 'fail': 1, 'reason': 'empty_output'})
+
+    @patch('news_digest.llm.requests.post')
+    @patch('news_digest.extras.session')
+    def test_collect_extras_reports_llm_status_row(self, _session, post):
+        # 「中文速读」单列一行状态，Actions 日志与 status.json 都能直接看出是否跑通。
+        # 这里 mock 的是底层 HTTP，让真实的 digest_zh 跑一遍，统计才有意义。
+        client = Mock()
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.content = ('<rss version="2.0"><channel><item><title>Robot learning with VLA</title>'
+                            '<link>https://arxiv.org/abs/2509.00001</link>'
+                            '<description>arXiv:2509.00001 Announce Type: new\nAbstract: '
+                            'embodied manipulation, sim-to-real transfer.</description>'
+                            '<pubDate>Mon, 29 Sep 2026 00:00:00 GMT</pubDate></item></channel></rss>')
+        client.get.return_value = response
+        _session.return_value.__enter__ = Mock(return_value=client)
+        _session.return_value.__exit__ = Mock(return_value=False)
+
+        config = {'extras': {'arxiv': {'enabled': True, 'translate': True, 'max_results': 1,
+                                       'categories': ['cs.RO'], 'keywords': ['VLA']},
+                             'chinese': {'enabled': False}}}
+        post.return_value.status_code = 200
+        post.return_value.json.return_value = {'choices': [{'message': {
+            'content': '具身操作新方法\n解决跨场景迁移问题，用 VLA 统一表征。'}}]}
+        with patch.dict(os.environ, {'LLM_API_KEY': 'sk-test'}):
+            articles, status = collect_extras(config, datetime.now(timezone.utc))
+        rows = {row['source']: row for row in status}
+        self.assertEqual(rows['中文速读']['ok'], True)
+        self.assertEqual(rows['中文速读']['count'], 1)
+        self.assertEqual(rows['中文速读']['failed'], 0)
+        self.assertEqual(articles[0].title, '具身操作新方法')
+
+    @patch('news_digest.extras.session')
+    def test_collect_extras_reports_llm_failure_reason(self, _session):
+        # 速读全失败时，状态行要给出 ok=False 与首个失败原因，便于线上定位。
+        client = Mock()
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.content = ('<rss version="2.0"><channel><item><title>Robot learning with VLA</title>'
+                            '<link>https://arxiv.org/abs/2509.00002</link>'
+                            '<description>arXiv:2509.00002 Announce Type: new\nAbstract: '
+                            'embodied manipulation.</description>'
+                            '<pubDate>Mon, 29 Sep 2026 00:00:00 GMT</pubDate></item></channel></rss>')
+        client.get.return_value = response
+        _session.return_value.__enter__ = Mock(return_value=client)
+        _session.return_value.__exit__ = Mock(return_value=False)
+
+        config = {'extras': {'arxiv': {'enabled': True, 'translate': True, 'max_results': 1,
+                                       'categories': ['cs.RO'], 'keywords': ['VLA']},
+                             'chinese': {'enabled': False}}}
+        with patch.dict(os.environ, {'LLM_API_KEY': ''}):  # 未配置密钥：必然降级
+            articles, status = collect_extras(config, datetime.now(timezone.utc))
+        rows = {row['source']: row for row in status}
+        self.assertFalse(rows['中文速读']['ok'])
+        self.assertEqual(rows['中文速读']['count'], 0)
+        self.assertEqual(rows['中文速读']['reason'], 'no_api_key')
+        # 降级后仍要有条目，只是空摘要——速读失败不能把论文丢掉。
+        self.assertEqual(len(articles), 1)
+        self.assertEqual(articles[0].summary, '')
+
     def test_fetch_github_shapes_and_truncates(self):
         client, response = Mock(), Mock()
         response.raise_for_status.return_value = None
