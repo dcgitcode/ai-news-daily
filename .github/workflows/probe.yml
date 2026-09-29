@@ -1,0 +1,33 @@
+name: probe-endpoints
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [probe]
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: DNS + HTTP reachability from Actions runner
+        run: |
+          set +e
+          echo "===== DNS ====="
+          for host in sctapi.ftqq.com push.ft07.com wxpusher.zjiecode.com xizhi.qqoq.net qyapi.weixin.qq.com oapi.dingtalk.com api.telegram.org; do
+            ip=$(getent hosts "$host" | head -1 | awk '{print $1}')
+            echo "$host -> ${ip:-DNS_FAIL}"
+          done
+          echo "===== HTTP (curl, 15s timeout) ====="
+          for url in \
+            "https://sctapi.ftqq.com/" \
+            "https://push.ft07.com/send/" \
+            "https://wxpusher.zjiecode.com/api/send/message" \
+            "https://xizhi.qqoq.net/" \
+            "https://qyapi.weixin.qq.com/cgi-bin/gettoken" \
+            "https://oapi.dingtalk.com/robot/send" \
+            "https://api.telegram.org/" ; do
+            out=$(curl -s -o /dev/null -w "%{http_code}|%{time_total}s|%{remote_ip}" -m 15 "$url" 2>&1)
+            rc=$?
+            echo "rc=$rc  $out  $url"
+          done
+          echo "===== done ====="
