@@ -420,13 +420,14 @@ class DigestTests(unittest.TestCase):
     @patch('news_digest.extras.llm.digest_zh',
            return_value=('仿真环境中学习具身操作', '解决仿真到现实的迁移问题。方法用 VLA 模型。'))
     def test_fetch_arxiv_translates_to_chinese(self, _digest):
-        # 丁老师反馈「全是英文看不懂」：英文标题与摘要必须换成中文标题 + 中文速读。
+        # 丁老师要求：标题用英文原文，译文另起一行跟在后面（不再替换原标题）。
         papers = fetch_arxiv(self._arxiv_client(),
                              {'categories': ['cs.RO'], 'keywords': ['embodied'],
                               'max_results': 5, 'translate': True},
                              datetime(2026, 9, 29, tzinfo=timezone.utc))
         self.assertEqual(len(papers), 1)
-        self.assertEqual(papers[0].title, '仿真环境中学习具身操作')
+        self.assertEqual(papers[0].title, 'Embodied Robot Learning in Simulation')  # 原文保留
+        self.assertEqual(papers[0].subtitle, '仿真环境中学习具身操作')  # 译文单独放
         self.assertIn('仿真到现实', papers[0].summary)
         self.assertNotIn('embodied manipulation', papers[0].summary)  # 不再抛整段英文摘要
 
@@ -438,6 +439,7 @@ class DigestTests(unittest.TestCase):
                               'max_results': 5, 'translate': True},
                              datetime(2026, 9, 29, tzinfo=timezone.utc))
         self.assertEqual(papers[0].title, 'Embodied Robot Learning in Simulation')
+        self.assertEqual(papers[0].subtitle, '')  # 无译文就没有第二行
         self.assertEqual(papers[0].summary, '')
 
     def test_article_lead_strips_boilerplate(self):
@@ -512,6 +514,50 @@ class DigestTests(unittest.TestCase):
         self.assertEqual(post.call_args.args[0], 'https://api.siliconflow.cn/v1/chat/completions')
         self.assertEqual(post.call_args.kwargs['json']['model'], 'THUDM/GLM-4-9B-0414')
 
+    def test_render_puts_subtitle_on_its_own_line(self):
+        # 丁老师要求：标题保留英文原文，中文译文另起一行跟在后面。
+        page, plain = render([self.article(title='GT-VLA: Target-Conditioned Trace Guidance',
+                                           subtitle='GT-VLA：目标条件轨迹引导')],
+                             '专业资讯速递', 100)
+        self.assertIn('<p class="subtitle">GT-VLA：目标条件轨迹引导</p>', page)
+        self.assertIn('<h2>1. <a href=', page)
+        self.assertIn('GT-VLA: Target-Conditioned Trace Guidance', page)  # 原文仍在
+        # 纯文本：标题行 + 两空格缩进的译文行，供 wecom_markdown 反解析。
+        self.assertIn('\n1. GT-VLA: Target-Conditioned Trace Guidance\n  GT-VLA：目标条件轨迹引导\n', plain)
+
+    def test_render_omits_subtitle_line_when_absent(self):
+        # 中文源条目本来就没有译文，不该凭空多出一行。
+        _, plain = render([self.article(title='李飞飞创业公司被收购', summary='摘要')], '速递', 100)
+        self.assertNotIn('  \n', plain)
+
+    def test_subtitle_reaches_serverchan_telegram_pushplus(self):
+        article = self.article(title='Humanoid Badminton', subtitle='人形机器人打羽毛球')
+        markdown = serverchan_markdown('速递', [article])
+        self.assertIn('**1. [Humanoid Badminton](https://example.com/a)**', markdown)
+        self.assertIn('人形机器人打羽毛球', markdown)
+        telegram = telegram_html('速递', [article])
+        self.assertIn('人形机器人打羽毛球', telegram)
+        pushplus = pushplus_html('速递', [article])
+        self.assertIn('人形机器人打羽毛球', pushplus)
+
+    def test_wecom_app_card_puts_subtitle_first_in_description(self):
+        article = self.article(title='Humanoid Badminton', subtitle='人形机器人打羽毛球',
+                               summary='用有限人体动作数据学习挥拍。')
+        description = wecom_app_cards([article])[0]['news']['articles'][0]['description']
+        self.assertTrue(description.startswith('人形机器人打羽毛球'))
+        self.assertIn('挥拍', description)
+
+    def test_wecom_markdown_does_not_mistake_subtitle_for_summary(self):
+        # 回归防护：wecom_markdown 从纯文本反解析，「紧跟标题的第一行长文本即摘要」。
+        # 译文行也是长文本，若无缩进分支就会顶掉真正的摘要。
+        page, plain = render([self.article(title='GT-VLA: Trace Guidance',
+                                           subtitle='GT-VLA：轨迹引导方法',
+                                           summary='这是真正的摘要内容。')], '速递', 100)
+        self.assertIn('GT-VLA：轨迹引导方法', page)  # HTML 版同样带译文
+        markdown = wecom_markdown('速递', plain)
+        self.assertIn('GT-VLA：轨迹引导方法', markdown)
+        self.assertIn('这是真正的摘要内容。', markdown)
+
     def test_render_note_overrides_default(self):
         page, plain = render([self.article(title='标题', summary='摘要')], '每日速递', 100,
                              note='arXiv 条目由大模型改写为中文速读。')
@@ -582,7 +628,8 @@ class DigestTests(unittest.TestCase):
         self.assertEqual(rows['中文速读']['ok'], True)
         self.assertEqual(rows['中文速读']['count'], 1)
         self.assertEqual(rows['中文速读']['failed'], 0)
-        self.assertEqual(articles[0].title, '具身操作新方法')
+        self.assertEqual(articles[0].title, 'Robot learning with VLA')  # 原文
+        self.assertEqual(articles[0].subtitle, '具身操作新方法')  # 译文
 
     @patch('news_digest.extras.session')
     def test_collect_extras_reports_llm_failure_reason(self, _session):
@@ -611,6 +658,7 @@ class DigestTests(unittest.TestCase):
         # 降级后仍要有条目，只是空摘要——速读失败不能把论文丢掉。
         self.assertEqual(len(articles), 1)
         self.assertEqual(articles[0].summary, '')
+        self.assertEqual(articles[0].subtitle, '')  # 无译文也不该有第二行
 
     def test_fetch_github_shapes_and_truncates(self):
         client, response = Mock(), Mock()

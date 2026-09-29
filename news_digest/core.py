@@ -87,6 +87,10 @@ class Article:
     score: float = 0
     keywords: list = field(default_factory=list)
     image: str = ''
+    # 译文标题。arXiv 论文保留英文原标题，中文译文另起一行显示。
+    # 不把译文并进 title：title 参与去重哈希与相似度比较（要稳定），
+    # 而 Server酱 的 Markdown 链接、Telegram 的 <a> 也都不容许标题里有换行。
+    subtitle: str = ''
 
     @property
     def keys(self):
@@ -179,9 +183,16 @@ def render(articles, title, summary_chars=280, note=None):
         if article.image:
             img = (f'<img src="{esc(article.image, quote=True)}" alt="" loading="lazy" '
                    f'referrerpolicy="no-referrer">')
+        # 译文标题紧跟原题另起一行（arXiv 论文：英文原文在上、中文译文在下）。
+        subtitle_html = f'<p class="subtitle">{esc(article.subtitle)}</p>' if article.subtitle else ''
         blocks.append(f'<article>{img}<h2>{index}. <a href="{esc(canonical_url(article.url), quote=True)}">{esc(article.title)}</a></h2>'
+                      f'{subtitle_html}'
                       f'<p class="meta">{esc(meta)}</p><p>{esc(summary)}</p><p class="meta">关键词：{esc(hits)}</p></article>')
-        lines.extend([f'{index}. {article.title}', meta, summary, article.url, ''])
+        # 纯文本用两个空格缩进表示「从属于上一行的译文标题」，wecom_markdown 依赖这个约定。
+        lines.append(f'{index}. {article.title}')
+        if article.subtitle:
+            lines.append(f'  {article.subtitle}')
+        lines.extend([meta, summary, article.url, ''])
     if not articles:
         blocks.append('<p>本次没有符合条件的新闻。</p>')
         lines.append('本次没有符合条件的新闻。')
@@ -190,6 +201,8 @@ def render(articles, title, summary_chars=280, note=None):
              'font:16px/1.7 system-ui;color:#243247;background:#f5f7fb}'
              'article{background:white;padding:18px;margin:16px 0;border-radius:12px}'
              'article img{display:block;width:100%;max-height:320px;object-fit:cover;border-radius:8px;margin:0 0 12px}'
-             'h2{font-size:20px}a{color:#175ca6}.meta{color:#657487;font-size:13px}}</style><body>')
+             'h2{font-size:20px;margin-bottom:2px}a{color:#175ca6}'
+             '.subtitle{color:#3d5166;font-size:16px;margin:0 0 8px}'
+             '.meta{color:#657487;font-size:13px}}</style><body>')
     page += f'<h1>{esc(title)}</h1><p>{esc(note)}</p>' + ''.join(blocks) + '</body></html>'
     return page, '\n'.join(lines)

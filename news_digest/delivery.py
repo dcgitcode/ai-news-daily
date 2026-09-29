@@ -52,7 +52,7 @@ def wecom_markdown(title, plain):
         numbered = re.match(r'^(\d+)\. (.+)$', line)
         if numbered:
             current = {'no': numbered.group(1), 'title': numbered.group(2),
-                       'source': '', 'summary': '', 'url': ''}
+                       'source': '', 'summary': '', 'url': '', 'subtitle': ''}
             items.append(current)
         elif current is None:
             continue
@@ -60,6 +60,10 @@ def wecom_markdown(title, plain):
             current['url'] = line
         elif ' · ' in line and '分数' in line:
             current['source'] = line.split(' · ')[1] if ' · ' in line else ''
+        # 缩进行是标题的译文（core.render 约定两个空格）。必须排在摘要分支之前，
+        # 否则「紧跟标题的第一行长文本即摘要」的规则会把译文当成摘要、真正的摘要被丢掉。
+        elif line.startswith('  ') and not current['subtitle']:
+            current['subtitle'] = line.strip()
         elif line and not current['summary']:
             current['summary'] = line
 
@@ -71,6 +75,8 @@ def wecom_markdown(title, plain):
         for item in items:
             line = f'**{item["no"]}. [{item["title"]}]({item["url"]})**' \
                    f'<font color="comment"> {item["source"]}</font>\n'
+            if item['subtitle']:
+                line += item['subtitle'] + '\n'
             if summary_chars and item['summary']:
                 line += item['summary'][:summary_chars] + '\n'
             parts.append(line + '\n')
@@ -119,8 +125,11 @@ def wecom_app_cards(articles):
     for chunk in chunks:
         arts = []
         for article in chunk:
+            # 卡片标题不支持换行，故译文放 description 首行，再接摘要。
+            description = (f'{article.subtitle}\n{article.summary}' if article.subtitle
+                           else article.summary)
             art = {'title': _truncate_bytes(article.title, 120),
-                   'description': _truncate_bytes(article.summary, 480),
+                   'description': _truncate_bytes(description, 480),
                    'url': canonical_url(article.url)}
             if article.image and article.image.startswith('https://'):
                 art['picurl'] = article.image[:1024]
@@ -143,6 +152,8 @@ def pushplus_html(title, articles):
         meta = f'{esc(article.source)} · {article.published:%Y-%m-%d}'
         block = ['<div>']
         block.append(f'<a href="{esc(url, quote=True)}"><b>{esc(article.title)}</b></a><br>')
+        if article.subtitle:
+            block.append(f'<span style="color:#3d5166">{esc(article.subtitle)}</span><br>')
         block.append(f'<font color="gray">{meta}</font><br>')
         if article.summary:
             block.append(f'<p>{esc(article.summary)}</p>')
@@ -169,8 +180,11 @@ def serverchan_markdown(title, articles, footer='完整图文版见邮件'):
         blocks = [f'## {title}']
         for index, article in enumerate(entries, 1):
             url = canonical_url(article.url)
-            block = [f'**{index}. [{article.title}]({url})**',
-                     f'{article.source} · {article.published:%Y-%m-%d}']
+            block = [f'**{index}. [{article.title}]({url})**']
+            # 译文标题独立成段：Markdown 链接语法里不能有换行，且同行拼接会与标题糊在一起。
+            if article.subtitle:
+                block.append(article.subtitle)
+            block.append(f'{article.source} · {article.published:%Y-%m-%d}')
             if summary_chars and article.summary:
                 block.append(article.summary[:summary_chars])
             if article.image and article.image.startswith('https://'):
@@ -211,8 +225,10 @@ def telegram_html(title, articles, footer='完整图文版见邮件'):
     parts = [f'<b>{esc(title)}</b>', '']
     for index, article in enumerate(articles, 1):
         url = canonical_url(article.url)
-        block = [f'{index}. <a href="{esc(url, quote=True)}">{esc(article.title)}</a>',
-                 f'{esc(article.source)} · {article.published:%Y-%m-%d}']
+        block = [f'{index}. <a href="{esc(url, quote=True)}">{esc(article.title)}</a>']
+        if article.subtitle:
+            block.append(esc(article.subtitle))
+        block.append(f'{esc(article.source)} · {article.published:%Y-%m-%d}')
         if article.summary:
             block.append(esc(article.summary)[:600])
         parts.append('\n'.join(block))

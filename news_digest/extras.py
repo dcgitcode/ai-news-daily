@@ -80,7 +80,10 @@ def fetch_arxiv(client, config, now):
         if translate:
             zh_title, zh_summary = llm.digest_zh(title, abstract)
         if zh_title:
-            papers.append(Article(zh_title, url, zh_summary, published, 'arXiv 论文', 0, '论文'))
+            # 英文原标题留在 title、中文译文放 subtitle 另起一行：
+            # 保留原文便于对照与检索，去重哈希也基于原文、跨天稳定。
+            papers.append(Article(title, url, zh_summary, published, 'arXiv 论文', 0, '论文',
+                                  subtitle=zh_title))
         elif translate:
             # 中文速读不可用：只给标题+链接。不放整段英文摘要——通篇英文正是要解决的问题。
             papers.append(Article(title, url, '', published, 'arXiv 论文', 0, '论文'))
