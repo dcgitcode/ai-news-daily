@@ -130,6 +130,36 @@ def pushplus_html(title, articles):
     return ''.join(blocks)
 
 
+def serverchan_markdown(title, articles, footer='完整图文版见邮件'):
+    """把图文日报渲染成 Server酱 的 Markdown 正文（推送到个人微信）。
+
+    Server酱 desp 只支持 Markdown（不支持 HTML），图片必须用 Markdown 语法引用
+    公网 https URL；被防盗链时不显示图片，文字照常送达（降级而非失败）。
+    标题另有限制（≤32 字符、不含换行），由 send() 统一收口。
+    """
+    blocks = [f'## {title}']
+    for index, article in enumerate(articles, 1):
+        url = canonical_url(article.url)
+        block = [f'**{index}. [{article.title}]({url})**',
+                 f'{article.source} · {article.published:%Y-%m-%d}']
+        if article.summary:
+            block.append(article.summary)
+        if article.image and article.image.startswith('https://'):
+            block.append(f'![]({article.image})')
+        blocks.append('\n\n'.join(block))
+    if footer:
+        blocks.append(f'> {footer}')
+    return '\n\n'.join(blocks)
+
+
+def serverchan_url(key):
+    """Server酱 Turbo 用固定域名；Server酱³（sctp{uid}t… 开头）用专属子域。"""
+    match = re.match(r'^sctp(\d+)t', key)
+    if match:
+        return f'https://{match.group(1)}.push.ft07.com/send/{key}.send'
+    return f'https://sctapi.ftqq.com/{key}.send'
+
+
 def telegram_html(title, articles, footer='完整图文版见邮件'):
     """把图文日报渲染成 Telegram HTML 消息（标题链接 + 来源 + 摘要）。
 
@@ -207,6 +237,8 @@ def validate_channels(channels):
         elif channel == 'wecom_app':
             for key in ('WECOM_CORPID', 'WECOM_CORPSECRET', 'WECOM_AGENTID', 'WECOM_TOUSER'):
                 required(key)
+        elif channel == 'serverchan':
+            required('SERVERCHAN_SENDKEY')
         elif channel == 'telegram':
             required('TELEGRAM_BOT_TOKEN')
             required('TELEGRAM_CHAT_ID')
@@ -313,4 +345,18 @@ def send(channel, title, page, plain, articles=None, footer=None):
                 except Exception:
                     pass
         return 'telegram_accepted:' + ','.join(receipts)
+    if channel == 'serverchan':
+        key = required('SERVERCHAN_SENDKEY')
+        # Server酱标题上限 32 字符且不允许换行，统一在此收口。
+        safe_title = title.replace('\n', ' ').strip()[:32]
+        desp = (serverchan_markdown(safe_title, articles, footer or '完整图文版见邮件')
+                if articles else plain)
+        response = requests.post(serverchan_url(key), data={'title': safe_title, 'desp': desp},
+                                 timeout=(10, 30))
+        response.raise_for_status()
+        data = response.json()
+        # 成功返回 {"code":0,...}；非 0 表示被拒（额度用尽 / 标题非法 / SendKey 失效）。
+        if data.get('code') != 0:
+            raise RuntimeError(f'ServerChan rejected request (code {data.get("code")}: {data.get("message")})')
+        return 'serverchan_accepted:' + str((data.get('data') or {}).get('pushid', 'ok'))
     raise ValueError('Unsupported channel')

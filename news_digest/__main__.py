@@ -31,7 +31,8 @@ def main():
                     'pushplus': ('PUSHPLUS_TOKEN',),
                     'wecombot': ('WECOM_WEBHOOK',),
                     'wecom_app': ('WECOM_CORPID', 'WECOM_CORPSECRET', 'WECOM_AGENTID', 'WECOM_TOUSER'),
-                    'telegram': ('TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID')}
+                    'telegram': ('TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID'),
+                    'serverchan': ('SERVERCHAN_SENDKEY',)}
     for channel in list(channels):
         absent = [key for key in required_env.get(channel, ()) if not os.getenv(key, '').strip()]
         if absent:
@@ -79,7 +80,7 @@ def main():
                     report['deliveries'][channel] = {'status': 'failed', 'error': 'PayloadTooLarge'}
                     continue
             try:
-                if channel in ('wecom_app', 'wecombot', 'pushplus', 'telegram'):
+                if channel in ('wecom_app', 'wecombot', 'pushplus', 'telegram', 'serverchan'):
                     receipt = send(channel, title, delivery_page, delivery_text, articles=items)
                 else:
                     receipt = send(channel, title, delivery_page, delivery_text)
@@ -105,7 +106,7 @@ def main():
                     if not items:
                         continue
                     extra_page, extra_plain = render(items, extra_title, 200)
-                    if channel == 'telegram':
+                    if channel in ('telegram', 'serverchan'):
                         receipt = send(channel, extra_title, extra_page, extra_plain,
                                        articles=items, footer='点击标题查看原文')
                     else:

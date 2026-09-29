@@ -8,7 +8,8 @@ from pathlib import Path
 from unittest.mock import patch, Mock
 
 from news_digest.core import Article, canonical_url, clean, load_state, mark, matches, pending, rank, render, save_state
-from news_digest.delivery import send, wecom_markdown, wecom_app_cards, pushplus_html, telegram_html
+from news_digest.delivery import (send, wecom_markdown, wecom_app_cards, pushplus_html,
+                                  serverchan_markdown, serverchan_url, telegram_html)
 from news_digest.sources import collect, extract_image, fetch_feed
 from news_digest.extras import collect_extras, fetch_arxiv, fetch_github, fetch_hackernews
 from news_digest.__main__ import main
@@ -159,12 +160,13 @@ class DigestTests(unittest.TestCase):
 
     def test_unconfigured_channel_is_skipped(self):
         with tempfile.TemporaryDirectory() as directory:
-            env = {'CHANNELS': 'email,pushplus,wecombot,wecom_app,telegram', 'STATE_PATH': str(Path(directory) / 's.json'),
+            env = {'CHANNELS': 'email,pushplus,wecombot,wecom_app,telegram,serverchan',
+                   'STATE_PATH': str(Path(directory) / 's.json'),
                    'REPORT_DIR': directory, 'PUSHPLUS_TOKEN': '', 'WECOM_WEBHOOK': '',
                    'WECOM_CORPID': '', 'WECOM_CORPSECRET': '', 'WECOM_AGENTID': '', 'WECOM_TOUSER': '',
-                   'TELEGRAM_BOT_TOKEN': '', 'TELEGRAM_CHAT_ID': '',
+                   'TELEGRAM_BOT_TOKEN': '', 'TELEGRAM_CHAT_ID': '', 'SERVERCHAN_SENDKEY': '',
                    'SMTP_USER': '', 'SMTP_PASSWORD': '', 'EMAIL_TO': ''}
-            # 四个渠道全部缺凭证：send 应一次都不被调用且不抛错。
+            # 五个渠道全部缺凭证：send 应一次都不被调用且不抛错。
             with patch.dict(os.environ, env), patch('sys.argv', ['digest']), \
                  patch('news_digest.__main__.validate_channels'), \
                  patch('news_digest.__main__.load_dotenv'), \
@@ -285,6 +287,41 @@ class DigestTests(unittest.TestCase):
         urls = [c.args[0] for c in post.call_args_list]
         self.assertEqual(sum('sendMessage' in u for u in urls), 1)
         self.assertEqual(sum('sendPhoto' in u for u in urls), 1)
+
+    def test_serverchan_markdown_embeds_https_images_only(self):
+        articles = [self.article(title='带图新闻', summary='摘要', image='https://cdn.example.com/p.jpg'),
+                    self.article(title='无图新闻', summary='另一条', image=''),
+                    self.article(title='http图被忽略', summary='x', image='http://insecure.example.com/p.jpg')]
+        content = serverchan_markdown('AI 每日新闻 测试', articles)
+        self.assertIn('**1. [带图新闻](https://example.com/a)**', content)  # canonical_url 归一
+        self.assertIn('![](https://cdn.example.com/p.jpg)', content)
+        self.assertNotIn('http://insecure.example.com/p.jpg', content)  # 仅 https 配图
+        self.assertIn('## AI 每日新闻 测试', content)
+
+    @patch('news_digest.delivery.requests.post')
+    def test_serverchan_send_posts_markdown_and_caps_title(self, post):
+        post.return_value.json.return_value = {'code': 0, 'data': {'pushid': 'P1'}}
+        with patch.dict(os.environ, {'SERVERCHAN_SENDKEY': 'SCT123'}):
+            articles = [self.article(title='标题', summary='摘要', image='https://cdn.example.com/p.jpg')]
+            receipt = send('serverchan', 'AI 每日新闻 2026-09-29' + '超长后缀' * 10,
+                           'html', 'plain', articles=articles)
+        self.assertEqual(receipt, 'serverchan_accepted:P1')
+        self.assertEqual(post.call_args.args[0], 'https://sctapi.ftqq.com/SCT123.send')
+        data = post.call_args.kwargs['data']
+        self.assertLessEqual(len(data['title']), 32)  # Server酱标题上限 32 字符
+        self.assertIn('![](https://cdn.example.com/p.jpg)', data['desp'])
+
+    @patch('news_digest.delivery.requests.post')
+    def test_serverchan_rejects_nonzero_code(self, post):
+        post.return_value.json.return_value = {'code': 40001, 'message': 'bad key'}
+        with patch.dict(os.environ, {'SERVERCHAN_SENDKEY': 'SCT123'}):
+            with self.assertRaises(RuntimeError):
+                send('serverchan', 't', 'html', 'plain')
+
+    def test_serverchan_url_switches_endpoint_by_key_type(self):
+        self.assertEqual(serverchan_url('SCT123'), 'https://sctapi.ftqq.com/SCT123.send')
+        self.assertEqual(serverchan_url('sctp42tABCD'),
+                         'https://42.push.ft07.com/send/sctp42tABCD.send')
 
     def test_fetch_arxiv_filters_by_keyword_and_strips_prefix(self):
         atom = (b'<?xml version="1.0" encoding="UTF-8"?>'
