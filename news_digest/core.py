@@ -197,12 +197,14 @@ def render(articles, title, summary_chars=280, note=None):
         blocks.append('<p>本次没有符合条件的新闻。</p>')
         lines.append('本次没有符合条件的新闻。')
     page = '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+    # .subtitle 用负的 margin-top 上移贴合标题，而不是去改 h2 的下边距——
+    # 改 h2 会连带影响主日报（主日报没有译文，标题与元信息会被挤在一起）。
     page += (f'<title>{esc(title)}</title><style>body{{max-width:820px;margin:32px auto;padding:0 20px;'
              'font:16px/1.7 system-ui;color:#243247;background:#f5f7fb}'
              'article{background:white;padding:18px;margin:16px 0;border-radius:12px}'
              'article img{display:block;width:100%;max-height:320px;object-fit:cover;border-radius:8px;margin:0 0 12px}'
-             'h2{font-size:20px;margin-bottom:2px}a{color:#175ca6}'
-             '.subtitle{color:#3d5166;font-size:16px;margin:0 0 8px}'
+             'h2{font-size:20px}a{color:#175ca6}'
+             '.subtitle{color:#3d5166;font-size:16px;margin:-12px 0 8px}'
              '.meta{color:#657487;font-size:13px}}</style><body>')
     page += f'<h1>{esc(title)}</h1><p>{esc(note)}</p>' + ''.join(blocks) + '</body></html>'
     return page, '\n'.join(lines)
